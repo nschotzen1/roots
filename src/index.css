@@ -1,0 +1,260 @@
+@import url('https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700;900&family=Suez+One&display=swap');
+@import "tailwindcss";
+
+:root {
+  --ink: #0f172a;
+  --paper: #ffffff;
+  --line: #dbe3ef;
+  --focus: #0284c7;
+  --accent: #f59e0b;
+
+  font-family: 'Heebo', 'Segoe UI', sans-serif;
+  line-height: 1.45;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.12), transparent 35%),
+    radial-gradient(circle at bottom right, rgba(245, 158, 11, 0.12), transparent 30%),
+    #f6efe2;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--focus) 40%, white);
+  outline-offset: 2px;
+}
+
+.game-shell {
+  position: relative;
+}
+
+@keyframes floaty {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(0, 18px, 0) scale(1.03); }
+}
+
+@keyframes popIn {
+  0% { transform: translateY(8px) scale(0.95); opacity: 0; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.0); }
+  50% { box-shadow: 0 0 0 18px rgba(245, 158, 11, 0.08); }
+}
+
+@keyframes reelSpinBurst {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
+  18% {
+    transform: translate3d(0, -4%, 0) scale(1.01);
+  }
+  42% {
+    transform: translate3d(0, 8%, 0) scale(1.02);
+    filter: blur(1.4px);
+  }
+  68% {
+    transform: translate3d(0, -3%, 0) scale(1.01);
+    filter: blur(0.55px);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes reelRejectShake {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  18% { transform: translate3d(-8px, 0, 0); }
+  36% { transform: translate3d(7px, 0, 0); }
+  54% { transform: translate3d(-5px, 0, 0); }
+  72% { transform: translate3d(4px, 0, 0); }
+}
+
+@keyframes slotBankCelebrate {
+  0% {
+    filter: brightness(1);
+  }
+  30% {
+    filter: brightness(1.08);
+  }
+  100% {
+    filter: brightness(1);
+  }
+}
+
+@keyframes timerBonusFlash {
+  0% {
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.85), 0 0 0 rgba(245, 158, 11, 0);
+    transform: scale(1);
+  }
+  24% {
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 0 0 10px rgba(245, 158, 11, 0.16);
+    transform: scale(1.015);
+  }
+  100% {
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.85), 0 0 0 0 rgba(245, 158, 11, 0);
+    transform: scale(1);
+  }
+}
+
+@keyframes timerBonusNumber {
+  0% {
+    color: #0f172a;
+    text-shadow: 0 0 0 rgba(245, 158, 11, 0);
+    transform: scale(1);
+  }
+  20% {
+    color: #b45309;
+    text-shadow: 0 10px 30px rgba(245, 158, 11, 0.18);
+    transform: scale(1.04);
+  }
+  100% {
+    color: #0f172a;
+    text-shadow: 0 0 0 rgba(245, 158, 11, 0);
+    transform: scale(1);
+  }
+}
+
+@keyframes slotAura {
+  0%, 100% {
+    filter: brightness(1) saturate(1);
+    transform: scale(1.005);
+  }
+  50% {
+    filter: brightness(1.08) saturate(1.04);
+    transform: scale(1.018);
+  }
+}
+
+.pop-in {
+  animation: popIn 260ms ease-out both;
+}
+
+.pulse-glow {
+  animation: pulseGlow 2.4s ease-in-out infinite;
+}
+
+.reel-spin {
+  animation: reelSpinBurst 620ms cubic-bezier(0.2, 0.8, 0.18, 1) both;
+  will-change: transform, filter;
+}
+
+.reel-shake {
+  animation: reelRejectShake 360ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+  will-change: transform;
+}
+
+.reel-delay-0 {
+  animation-delay: 0ms;
+}
+
+.reel-delay-1 {
+  animation-delay: 60ms;
+}
+
+.reel-delay-2 {
+  animation-delay: 120ms;
+}
+
+.slot-bank-shake {
+  animation: reelRejectShake 380ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
+.slot-bank-celebrate {
+  animation: slotBankCelebrate 900ms ease-out both;
+}
+
+.timer-bonus-flash {
+  animation: timerBonusFlash 980ms ease-out both;
+}
+
+.timer-bonus-number {
+  animation: timerBonusNumber 980ms ease-out both;
+}
+
+.mosaic-slot-shell {
+  box-shadow:
+    inset 0 18px 16px rgba(255, 247, 224, 0.42),
+    inset 0 -18px 28px rgba(95, 63, 28, 0.28),
+    inset 12px 0 20px rgba(129, 92, 52, 0.12),
+    inset -12px 0 20px rgba(129, 92, 52, 0.12),
+    0 16px 32px rgba(53, 33, 10, 0.22);
+}
+
+.mosaic-slot-surface {
+  background:
+    radial-gradient(circle at 50% 14%, rgba(255, 250, 237, 0.92), rgba(255, 250, 237, 0) 34%),
+    radial-gradient(circle at 18% 22%, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0) 18%),
+    radial-gradient(circle at 76% 74%, rgba(92, 62, 28, 0.16), rgba(92, 62, 28, 0) 22%),
+    linear-gradient(180deg, rgba(250, 238, 207, 0.98) 0%, rgba(224, 196, 147, 0.98) 58%, rgba(164, 127, 80, 0.98) 100%),
+    linear-gradient(rgba(123, 92, 51, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(123, 92, 51, 0.08) 1px, transparent 1px);
+  background-size: auto, auto, auto, auto, 13px 13px, 13px 13px;
+  background-position: center, center, center, center, 0 0, 0 0;
+  background-blend-mode: screen, screen, multiply, normal, multiply, multiply;
+}
+
+.mosaic-slot-selected {
+  animation: slotAura 1.2s ease-in-out infinite;
+  box-shadow:
+    inset 0 18px 16px rgba(255, 247, 224, 0.56),
+    inset 0 -20px 28px rgba(95, 63, 28, 0.34),
+    inset 12px 0 20px rgba(129, 92, 52, 0.16),
+    inset -12px 0 20px rgba(129, 92, 52, 0.16),
+    0 0 0 1px rgba(252, 211, 77, 0.52),
+    0 0 28px rgba(245, 158, 11, 0.28),
+    0 18px 34px rgba(53, 33, 10, 0.26);
+}
+
+.mosaic-slot-target {
+  box-shadow:
+    inset 0 18px 16px rgba(255, 247, 224, 0.44),
+    inset 0 -18px 28px rgba(95, 63, 28, 0.29),
+    inset 12px 0 20px rgba(129, 92, 52, 0.12),
+    inset -12px 0 20px rgba(129, 92, 52, 0.12),
+    0 0 0 1px rgba(125, 211, 252, 0.5),
+    0 0 24px rgba(56, 189, 248, 0.18),
+    0 16px 30px rgba(53, 33, 10, 0.22);
+}
+
+.mosaic-cutout-depth {
+  border-radius: 1.25rem;
+  background:
+    radial-gradient(circle at 50% 10%, rgba(255, 245, 218, 0.13), rgba(255, 245, 218, 0) 26%),
+    linear-gradient(180deg, rgba(43, 26, 9, 0.18) 0%, rgba(0, 0, 0, 0.02) 26%, rgba(0, 0, 0, 0) 38%, rgba(29, 18, 6, 0.17) 100%);
+  box-shadow:
+    inset 0 22px 24px rgba(64, 41, 15, 0.22),
+    inset 0 -26px 30px rgba(38, 24, 9, 0.32),
+    inset 12px 0 20px rgba(54, 35, 14, 0.16),
+    inset -12px 0 20px rgba(54, 35, 14, 0.16);
+}
