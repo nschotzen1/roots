@@ -1,4 +1,5 @@
 import rootsRaw from './data/roots_hebrew_scraped.txt?raw';
+import { getStreakTier } from './streakTiers';
 
 type GameMode = 'journey' | 'survival';
 type SessionStatus = 'active' | 'game_over' | 'completed';
@@ -38,6 +39,7 @@ type SessionSnapshot = {
     samePositionChain: number;
     samePositionIndex: number | null;
   };
+  visitedRoots?: string[];
   visitedCount: number;
   allowRevisit: boolean;
   types: MoveType[];
@@ -61,7 +63,10 @@ type MoveSummary = {
   scoreGain?: number;
   baseScore?: number;
   chainBonusScore?: number;
+  streakBonusScore?: number;
   bonusMs?: number;
+  streakBonusMs?: number;
+  comboBonusMs?: number;
   bonusMultiplier?: number;
   elapsedMs?: number;
   nextRemainingMs?: number;
@@ -72,6 +77,7 @@ type MoveSummary = {
   permutationChain?: number;
   samePositionChain?: number;
   samePositionIndex?: number | null;
+  streakAfterMove?: number;
   edge?: {
     type: MoveType;
     positionA: number;
@@ -95,6 +101,20 @@ type SessionPayload = {
     edges: NeighborEdge[];
   };
   move: MoveSummary | null;
+};
+
+type RootSuggestionStatus = 'pending' | 'approved' | 'rejected';
+
+type RootSuggestion = {
+  id: string;
+  root: string;
+  dottedRoot: string;
+  status: RootSuggestionStatus;
+  note: string | null;
+  reviewNote: string | null;
+  createdAtMs: number;
+  updatedAtMs: number;
+  reviewedAtMs: number | null;
 };
 
 type ApiError = Error & {
@@ -168,19 +188,24 @@ type Store = {
 const API_BASE = import.meta.env.VITE_API_BASE_URL?.trim() ?? '';
 const USE_REMOTE_API = API_BASE.length > 0;
 const DEFAULT_ROOT_LENGTH = 3;
+const LOCAL_SUGGESTIONS_STORAGE_KEY = 'roots.suggestions.v1';
+const LOCAL_APPROVED_ROOTS_STORAGE_KEY = 'roots.approvedRoots.v1';
 const MOVE_TYPES: MoveType[] = ['REPLACE', 'SWAP'];
 const SESSION_MODES: GameMode[] = ['journey', 'survival'];
 const MOVE_SCORE_RULES = {
   REPLACE: {
     baseScore: 100,
-    chainStepScore: 30,
+    chainStepScore: 35,
+    chainStepTimeMs: 250,
+    moveBonusMs: 0,
   },
   SWAP: {
-    baseScore: 140,
-    chainStepScore: 45,
+    baseScore: 170,
+    chainStepScore: 80,
+    chainStepTimeMs: 950,
+    moveBonusMs: 900,
   },
 };
-
 const HEB_TO_GAME: Record<string, string> = {
   א: 'a',
   ב: 'b',
@@ -239,6 +264,8 @@ let store: Store = {
   adjacencyByRoot: new Map(),
 };
 const sessions = new Map<string, InternalSession>();
+let localSuggestions: RootSuggestion[] | null = null;
+let localApprovedRoots: string[] | null = null;
 
 const getNow = () => Date.now() + localTimeOffsetMs;
 
@@ -508,10 +535,73 @@ const buildReplaceEdges = (roots: string[]) => {
   return edges;
 };
 
-const initializeStore = () => {
-  if (store.initialized) return;
+const canUseLocalStorage = () => typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
 
-  const roots = loadRootsFromRaw(rootsRaw, DEFAULT_ROOT_LENGTH);
+const parseStoredArray = <T,>(value: string | null, fallback: T[]): T[] => {
+  if (!value) return fallback;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const serializeSuggestion = (value: Partial<RootSuggestion> & { root: string; id: string }): RootSuggestion => ({
+  id: value.id,
+  root: value.root,
+  dottedRoot: value.dottedRoot || toDottedRoot(value.root),
+  status:
+    value.status === 'approved' || value.status === 'rejected' || value.status === 'pending'
+      ? value.status
+      : 'pending',
+  note: typeof value.note === 'string' && value.note.trim() ? value.note.trim() : null,
+  reviewNote:
+    typeof value.reviewNote === 'string' && value.reviewNote.trim() ? value.reviewNote.trim() : null,
+  createdAtMs: Number(value.createdAtMs) || getNow(),
+  updatedAtMs: Number(value.updatedAtMs) || getNow(),
+  reviewedAtMs: value.reviewedAtMs ? Number(value.reviewedAtMs) : null,
+});
+
+const loadLocalSuggestionState = () => {
+  if (localSuggestions && localApprovedRoots) return;
+
+  const storedSuggestions = canUseLocalStorage()
+    ? parseStoredArray<RootSuggestion | Partial<RootSuggestion>>(
+        window.localStorage.getItem(LOCAL_SUGGESTIONS_STORAGE_KEY),
+        [],
+      )
+    : [];
+  const storedApprovedRoots = canUseLocalStorage()
+    ? parseStoredArray<string>(window.localStorage.getItem(LOCAL_APPROVED_ROOTS_STORAGE_KEY), [])
+    : [];
+
+  localSuggestions = storedSuggestions
+    .filter((value): value is Partial<RootSuggestion> & { id: string; root: string } =>
+      Boolean(value && typeof value === 'object' && 'id' in value && 'root' in value),
+    )
+    .map((value) => serializeSuggestion(value))
+    .sort((left, right) => right.createdAtMs - left.createdAtMs);
+  localApprovedRoots = [
+    ...new Set(
+      storedApprovedRoots
+        .map((value) => parseRootInput(value))
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
+};
+
+const persistLocalSuggestionState = () => {
+  if (!canUseLocalStorage()) return;
+  loadLocalSuggestionState();
+  window.localStorage.setItem(LOCAL_SUGGESTIONS_STORAGE_KEY, JSON.stringify(localSuggestions ?? []));
+  window.localStorage.setItem(
+    LOCAL_APPROVED_ROOTS_STORAGE_KEY,
+    JSON.stringify(localApprovedRoots ?? []),
+  );
+};
+
+const buildStoreFromRoots = (roots: string[]) => {
   const uniqueRoots = [...new Set(roots)].sort();
   const rootRows = uniqueRoots.map((plain) => ({
     plain,
@@ -572,6 +662,15 @@ const initializeStore = () => {
     rootsByLength,
     adjacencyByRoot,
   };
+};
+
+const initializeStore = () => {
+  if (store.initialized) return;
+
+  loadLocalSuggestionState();
+  const roots = loadRootsFromRaw(rootsRaw, DEFAULT_ROOT_LENGTH);
+  const approvedRoots = localApprovedRoots ?? [];
+  buildStoreFromRoots([...roots, ...approvedRoots]);
 };
 
 const ensureStore = () => {
@@ -687,6 +786,15 @@ const bfs = (start: string, { types, maxDepth = 12 }: { types?: unknown; maxDept
 const countRoots = async () => ensureStore().stats.rootsCount;
 
 const rootExists = async (root: string) => ensureStore().rootsByPlain.has(root);
+
+const addRootToStore = (root: string) => {
+  const currentStore = ensureStore();
+  if (currentStore.rootsByPlain.has(root)) return false;
+
+  const nextRoots = [...currentStore.rootsByPlain.keys(), root];
+  buildStoreFromRoots(nextRoots);
+  return true;
+};
 
 const getNeighbors = async (
   root: string,
@@ -852,6 +960,7 @@ const serializeSession = (session: InternalSession, now = getNow()): SessionSnap
       samePositionChain: session.combo.samePositionChain,
       samePositionIndex: session.combo.lastReplacePosition,
     },
+    visitedRoots: [...session.visited],
     visitedCount: session.visited.size,
     allowRevisit: session.allowRevisit,
     types: session.types,
@@ -981,12 +1090,15 @@ const getComboSummary = (comboState: InternalSession['combo'], moveEdge: Neighbo
   const scoreRule = MOVE_SCORE_RULES[moveEdge.type] || MOVE_SCORE_RULES.REPLACE;
   const comboCount = moveEdge.type === 'SWAP' ? comboState.permutationChain : comboState.samePositionChain;
   const chainBonusScore = Math.max(0, comboCount - 1) * scoreRule.chainStepScore;
+  const comboBonusMs = Math.max(0, comboCount - 1) * scoreRule.chainStepTimeMs;
 
   return {
     activeCombo: moveEdge.type === 'SWAP' ? ('permutation' as ComboKind) : ('same_position' as ComboKind),
     comboCount,
     chainBonusScore,
+    comboBonusMs,
     baseScore: scoreRule.baseScore,
+    moveBonusMs: scoreRule.moveBonusMs,
   };
 };
 
@@ -999,17 +1111,29 @@ const applyValidMove = (session: InternalSession, nextRoot: string, moveEdge: Ne
 
   const elapsedMs = Math.max(0, now - session.turnStartedAtMs);
   const { bonusMultiplier, speedTier } = getBonusOutcome(elapsedMs, session.config.bonusWindowMs);
-  const bonusMs = Math.round(session.config.bonusBaseMs * bonusMultiplier);
   const comboState = getNextComboState(session, moveEdge);
-  const { activeCombo, comboCount, chainBonusScore, baseScore } = getComboSummary(comboState, moveEdge);
+  const { activeCombo, comboCount, chainBonusScore, comboBonusMs, baseScore, moveBonusMs } =
+    getComboSummary(comboState, moveEdge);
+  const streakAfterMove = session.streak + 1;
+  const streakTier = getStreakTier(streakAfterMove);
+  const streakBonusScore = streakTier.scoreBonus;
+  const streakBonusMs = streakTier.timeBonusMs;
+  const bonusMs =
+    Math.round(session.config.bonusBaseMs * bonusMultiplier) +
+    moveBonusMs +
+    streakBonusMs +
+    comboBonusMs;
 
   session.currentRoot = nextRoot;
   session.visited.add(nextRoot);
   session.moveCount += 1;
-  session.streak += 1;
+  session.streak = streakAfterMove;
   session.combo = comboState;
 
-  const scoreGain = Math.max(10, Math.round((baseScore + chainBonusScore) * bonusMultiplier));
+  const scoreGain = Math.max(
+    10,
+    Math.round((baseScore + chainBonusScore) * bonusMultiplier) + streakBonusScore,
+  );
   session.score += scoreGain;
 
   session.countdownRemainingMs = remainingBeforeMs + bonusMs;
@@ -1026,11 +1150,15 @@ const applyValidMove = (session: InternalSession, nextRoot: string, moveEdge: Ne
     nextRemainingMs: session.countdownRemainingMs,
     baseScore,
     chainBonusScore,
+    streakBonusScore,
+    streakBonusMs,
+    comboBonusMs,
     activeCombo,
     comboCount,
     permutationChain: comboState.permutationChain,
     samePositionChain: comboState.samePositionChain,
     samePositionIndex: comboState.lastReplacePosition,
+    streakAfterMove,
   };
 };
 
@@ -1144,12 +1272,106 @@ const parseRequestBody = (init?: RequestInit) => {
   }
 };
 
+const normalizeSuggestionStatus = (value: unknown): RootSuggestionStatus | 'all' => {
+  const normalized = String(value || '').toLowerCase();
+  return normalized === 'pending' || normalized === 'approved' || normalized === 'rejected'
+    ? normalized
+    : 'all';
+};
+
 const handleHealth = async () => ({
   ok: true,
   roots: await countRoots(),
+  pendingSuggestions: (localSuggestions ?? []).filter((suggestion) => suggestion.status === 'pending').length,
   storageBackend: 'browser-memory',
   ts: getNow(),
 });
+
+const handleListRootSuggestions = async (statusValue: unknown) => {
+  loadLocalSuggestionState();
+  const status = normalizeSuggestionStatus(statusValue);
+  const suggestions =
+    status === 'all'
+      ? [...(localSuggestions ?? [])]
+      : (localSuggestions ?? []).filter((suggestion) => suggestion.status === status);
+  return { suggestions };
+};
+
+const handleCreateRootSuggestion = async (body: Record<string, unknown>) => {
+  loadLocalSuggestionState();
+
+  const root = expectValue(parseBodyRoot(body.root), 400, { error: 'root_is_required' });
+
+  if (await rootExists(root)) {
+    fail(409, { error: 'root_already_exists', root });
+  }
+
+  const duplicate = (localSuggestions ?? []).find(
+    (suggestion) =>
+      suggestion.root === root &&
+      (suggestion.status === 'pending' || suggestion.status === 'approved'),
+  );
+
+  if (duplicate) {
+    fail(409, {
+      error: duplicate.status === 'approved' ? 'root_already_approved' : 'root_already_suggested',
+      suggestion: duplicate,
+    });
+  }
+
+  const now = getNow();
+  const suggestion = serializeSuggestion({
+    id:
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `suggestion-${Math.random().toString(36).slice(2, 10)}`,
+    root,
+    status: 'pending',
+    note: typeof body.note === 'string' ? body.note : null,
+    createdAtMs: now,
+    updatedAtMs: now,
+    reviewedAtMs: null,
+  });
+
+  localSuggestions = [suggestion, ...(localSuggestions ?? [])];
+  persistLocalSuggestionState();
+  return { suggestion };
+};
+
+const handleReviewRootSuggestion = async (suggestionId: string, body: Record<string, unknown>) => {
+  loadLocalSuggestionState();
+
+  const decision = String(body.decision || '').toLowerCase();
+  if (decision !== 'approve' && decision !== 'reject') {
+    fail(400, { error: 'decision_must_be_approve_or_reject' });
+  }
+
+  const suggestion = expectValue(
+    (localSuggestions ?? []).find((candidate) => candidate.id === suggestionId),
+    404,
+    { error: 'suggestion_not_found' },
+  );
+
+  const now = getNow();
+  if (decision === 'approve' && !(await rootExists(suggestion.root))) {
+    addRootToStore(suggestion.root);
+    localApprovedRoots = [...new Set([...(localApprovedRoots ?? []), suggestion.root])].sort();
+  }
+
+  const reviewed = serializeSuggestion({
+    ...suggestion,
+    status: decision === 'approve' ? 'approved' : 'rejected',
+    reviewNote: typeof body.reviewNote === 'string' ? body.reviewNote : null,
+    updatedAtMs: now,
+    reviewedAtMs: now,
+  });
+
+  localSuggestions = (localSuggestions ?? []).map((candidate) =>
+    candidate.id === suggestionId ? reviewed : candidate,
+  );
+  persistLocalSuggestionState();
+  return { suggestion: reviewed };
+};
 
 const handleGetNextOptions = async (body: Record<string, unknown>) => {
   const safeRoot = expectValue(parseBodyRoot(body.root), 400, { error: 'root is required' });
@@ -1388,6 +1610,14 @@ const requestLocalJson = async <T,>(path: string, init?: RequestInit): Promise<T
     return (await handleHealth()) as T;
   }
 
+  if (url.pathname === '/api/root-suggestions' && method === 'GET') {
+    return (await handleListRootSuggestions(url.searchParams.get('status'))) as T;
+  }
+
+  if (url.pathname === '/api/root-suggestions' && method === 'POST') {
+    return (await handleCreateRootSuggestion(body)) as T;
+  }
+
   if (url.pathname === '/getNextOptions' && method === 'POST') {
     return (await handleGetNextOptions(body)) as T;
   }
@@ -1416,6 +1646,15 @@ const requestLocalJson = async <T,>(path: string, init?: RequestInit): Promise<T
       throw createApiError(404, { error: 'session_not_found' });
     }
     return (await handleMove(decodeURIComponent(moveSessionId), body)) as T;
+  }
+
+  const reviewSuggestionMatch = url.pathname.match(/^\/api\/root-suggestions\/([^/]+)\/review$/);
+  if (reviewSuggestionMatch && method === 'POST') {
+    const suggestionId = reviewSuggestionMatch[1];
+    if (!suggestionId) {
+      throw createApiError(404, { error: 'suggestion_not_found' });
+    }
+    return (await handleReviewRootSuggestion(decodeURIComponent(suggestionId), body)) as T;
   }
 
   throw createApiError(

@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import BonusToast from './components/BonusToast';
+import ComboBurst from './components/ComboBurst';
 import LetterCard from './components/LetterCard';
+import StreakBubble from './components/StreakBubble';
+import StreakPulse from './components/StreakPulse';
 import { advanceApiTime, isApiError, requestJson, resetApiTime } from './game/apiClient';
+import {
+  formatStreakTierRange,
+  getNextStreakTier,
+  getStreakTier,
+  getStreakTierProgress,
+  isStreakTierUpgrade,
+} from './game/streakTiers';
 
 declare global {
   interface Window {
@@ -51,6 +62,7 @@ type SessionSnapshot = {
     samePositionChain: number;
     samePositionIndex: number | null;
   };
+  visitedRoots?: string[];
   visitedCount: number;
   allowRevisit: boolean;
   types: MoveType[];
@@ -71,7 +83,10 @@ type MoveSummary = {
   scoreGain?: number;
   baseScore?: number;
   chainBonusScore?: number;
+  streakBonusScore?: number;
   bonusMs?: number;
+  streakBonusMs?: number;
+  comboBonusMs?: number;
   bonusMultiplier?: number;
   elapsedMs?: number;
   nextBudgetMs?: number;
@@ -82,6 +97,7 @@ type MoveSummary = {
   permutationChain?: number;
   samePositionChain?: number;
   samePositionIndex?: number | null;
+  streakAfterMove?: number;
   edge?: {
     type: MoveType;
     positionA: number;
@@ -107,20 +123,63 @@ type SessionPayload = {
   move: MoveSummary | null;
 };
 
+type PathPayload = {
+  from: string;
+  to: string;
+  distance: number;
+  path: string[];
+  dottedPath: string[];
+};
+
 type BonusFlash = {
   bonusMs: number;
   multiplier: number;
   elapsedMs: number;
   scoreGain: number;
+  moveType: MoveType | null;
   comboLabel: string | null;
   comboCount: number;
   chainBonusScore: number;
+  streakBonusScore: number;
+  streakBonusMs: number;
+  comboBonusMs: number;
+  streakAfterMove: number;
+  comboSlots: number[];
 };
 
 type AttemptFlash = {
   tone: 'invalid' | 'repeat';
   message: string;
   root: string;
+  streakResetFrom: number;
+  streakTierLabel: string | null;
+};
+
+type RootSuggestionStatus = 'pending' | 'approved' | 'rejected';
+
+type RootSuggestion = {
+  id: string;
+  root: string;
+  dottedRoot: string;
+  status: RootSuggestionStatus;
+  note: string | null;
+  reviewNote: string | null;
+  createdAtMs: number;
+  updatedAtMs: number;
+  reviewedAtMs: number | null;
+};
+
+type SuggestionFeedback = {
+  tone: 'success' | 'error';
+  text: string;
+};
+
+type DragGestureState = {
+  pointerId: number;
+  sourceIdx: number;
+  startX: number;
+  startY: number;
+  dragging: boolean;
 };
 
 type TransliterationPresetId = 'hebrew_native' | 'letter_clean' | 'legacy_symbols';
@@ -157,6 +216,7 @@ const DEFAULT_TYPES: MoveType[] = ['REPLACE', 'SWAP'];
 const DEFAULT_COUNTDOWN_MS = 24_000;
 const DEFAULT_BONUS_BASE_MS = 6_000;
 const DEFAULT_BONUS_WINDOW_MS = 8_000;
+const REEL_DRAG_THRESHOLD_PX = 12;
 const TRANSLITERATION_STORAGE_KEY = 'roots.transliterationPreset.v2';
 const STAGE_BACKGROUND_IMAGE = '/backgrounds/mosaic-overlay.png';
 const SLOT_LABELS = ['Right reel', 'Middle reel', 'Left reel'] as const;
@@ -301,6 +361,123 @@ const getComboDescriptor = (
   };
 };
 
+const getStreakDescriptor = (streak: number) => {
+  if (streak <= 0) return null;
+
+  const tier = getStreakTier(streak);
+  return {
+    label: tier.label,
+    detail: `${tier.label} x${streak}`,
+  };
+};
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const getStageSlotCenter = (index: number) => {
+  const slot = STAGE_SLOT_LAYOUT[index];
+  if (!slot) return null;
+
+  return {
+    x: slot.left + slot.width / 2,
+    y: slot.top + slot.height / 2,
+    width: slot.width,
+    height: slot.height,
+  };
+};
+
+const STREAK_VISUALS = {
+  reset: {
+    badge:
+      'rounded-full border border-white/80 bg-white/76 text-slate-700',
+    timerShell:
+      'border-white/75 bg-white/72 shadow-[inset_0_1px_0_rgba(255,255,255,0.88),0_10px_30px_rgba(15,23,42,0.08)]',
+    stageWash: '',
+  },
+  x: {
+    badge:
+      'rounded-full border border-amber-200/90 bg-amber-50/88 text-amber-800 shadow-[0_14px_26px_-20px_rgba(217,119,6,0.46)]',
+    timerShell:
+      'border-amber-200/90 bg-amber-50/74 shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_0_0_6px_rgba(251,191,36,0.08),0_10px_30px_rgba(217,119,6,0.14)]',
+    stageWash:
+      'bg-[radial-gradient(circle_at_80%_20%,rgba(251,191,36,0.18),transparent_20%),radial-gradient(circle_at_24%_74%,rgba(249,115,22,0.1),transparent_28%)]',
+  },
+  y: {
+    badge:
+      'rounded-full border border-sky-200/90 bg-sky-50/90 text-sky-800 shadow-[0_14px_26px_-20px_rgba(14,165,233,0.42)]',
+    timerShell:
+      'border-sky-200/90 bg-sky-50/74 shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_0_0_6px_rgba(56,189,248,0.08),0_10px_30px_rgba(14,165,233,0.14)]',
+    stageWash:
+      'bg-[radial-gradient(circle_at_80%_20%,rgba(56,189,248,0.18),transparent_20%),radial-gradient(circle_at_20%_82%,rgba(37,99,235,0.08),transparent_28%)]',
+  },
+  z: {
+    badge:
+      'rounded-full border border-fuchsia-200/90 bg-fuchsia-50/90 text-fuchsia-800 shadow-[0_14px_26px_-20px_rgba(192,38,211,0.42)]',
+    timerShell:
+      'border-fuchsia-200/90 bg-fuchsia-50/72 shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_0_0_6px_rgba(232,121,249,0.08),0_10px_30px_rgba(192,38,211,0.14)]',
+    stageWash:
+      'bg-[radial-gradient(circle_at_80%_20%,rgba(232,121,249,0.2),transparent_20%),radial-gradient(circle_at_20%_82%,rgba(217,70,239,0.08),transparent_28%)]',
+  },
+  viral: {
+    badge:
+      'rounded-full border border-emerald-200/90 bg-emerald-50/90 text-emerald-800 shadow-[0_14px_26px_-20px_rgba(5,150,105,0.42)]',
+    timerShell:
+      'border-emerald-200/90 bg-emerald-50/72 shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_0_0_6px_rgba(52,211,153,0.08),0_10px_30px_rgba(5,150,105,0.14)]',
+    stageWash:
+      'bg-[radial-gradient(circle_at_80%_20%,rgba(52,211,153,0.2),transparent_20%),radial-gradient(circle_at_20%_82%,rgba(16,185,129,0.08),transparent_28%)]',
+  },
+} as const;
+
+const getComboBurstAnchor = (slotIndexes: number[]) => {
+  const uniqueSlots = [...new Set(slotIndexes)].filter(
+    (index) => index >= 0 && index < STAGE_SLOT_LAYOUT.length,
+  );
+  if (uniqueSlots.length === 0) return null;
+
+  if (uniqueSlots.length === 1) {
+    const [slotIndex] = uniqueSlots;
+    const center = getStageSlotCenter(slotIndex);
+    if (!center) return null;
+
+    if (slotIndex === 0) {
+      return {
+        leftPct: clamp(center.x + center.width * 0.82, 15, 85),
+        topPct: clamp(center.y - center.height * 0.14, 18, 82),
+        placement: 'right' as const,
+      };
+    }
+
+    if (slotIndex === 2) {
+      return {
+        leftPct: clamp(center.x - center.width * 0.82, 15, 85),
+        topPct: clamp(center.y - center.height * 0.14, 18, 82),
+        placement: 'left' as const,
+      };
+    }
+
+    return {
+      leftPct: center.x,
+      topPct: clamp(center.y - center.height * 0.44, 18, 82),
+      placement: 'top' as const,
+    };
+  }
+
+  const centers = uniqueSlots
+    .map((index) => getStageSlotCenter(index))
+    .filter((value): value is NonNullable<ReturnType<typeof getStageSlotCenter>> => Boolean(value));
+
+  if (centers.length === 0) return null;
+
+  const averageX = centers.reduce((sum, center) => sum + center.x, 0) / centers.length;
+  const topEdge = Math.min(...centers.map((center) => center.y - center.height / 2));
+  const tallest = Math.max(...centers.map((center) => center.height));
+
+  return {
+    leftPct: clamp(averageX, 18, 82),
+    topPct: clamp(topEdge + tallest * 0.12, 18, 82),
+    placement: 'top' as const,
+  };
+};
+
 const toDisplayChar = (ch: string, preset: TransliterationPreset) => {
   const lower = (ch || '').toLowerCase();
   const aliased = preset.canonicalToDisplay[lower];
@@ -314,9 +491,9 @@ const toDisplayDotted = (letters: string[], preset: TransliterationPreset) =>
 const formatDisplayRoot = (plainRoot: string, preset: TransliterationPreset) =>
   toDisplayDotted((plainRoot || '').split(''), preset);
 
-const imgForChar = (ch: string): string => {
+const imgForChar = (ch: string): string | null => {
   const lower = (ch || '').toLowerCase();
-  return /^[a-z]$/.test(lower) ? `/letters/${lower}.png` : '/letter-placeholder.png';
+  return /^[a-z]$/.test(lower) ? `/letters/${lower}.png` : null;
 };
 
 const normalizeGameChar = (key: string, inputAliases: Record<string, string>): string | null => {
@@ -385,6 +562,8 @@ export default function App() {
   const [neighborEdges, setNeighborEdges] = useState<NeighborEdge[]>([]);
   const [letters, setLetters] = useState<string[]>(['', '', '']);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const [dragSourceIdx, setDragSourceIdx] = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [transliterationPresetId, setTransliterationPresetId] =
     useState<TransliterationPresetId>('hebrew_native');
@@ -414,6 +593,17 @@ export default function App() {
     source: 'unavailable',
     sample: null,
   });
+  const [showSuggestionPanel, setShowSuggestionPanel] = useState(false);
+  const [suggestedRootInput, setSuggestedRootInput] = useState('');
+  const [suggestionNoteInput, setSuggestionNoteInput] = useState('');
+  const [rootSuggestions, setRootSuggestions] = useState<RootSuggestion[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [submittingSuggestion, setSubmittingSuggestion] = useState(false);
+  const [reviewingSuggestionId, setReviewingSuggestionId] = useState<string | null>(null);
+  const [suggestionFeedback, setSuggestionFeedback] = useState<SuggestionFeedback | null>(null);
+  const [journeySolution, setJourneySolution] = useState<PathPayload | null>(null);
+  const [loadingJourneySolution, setLoadingJourneySolution] = useState(false);
+  const [journeySolutionError, setJourneySolutionError] = useState('');
 
   const [clockMs, setClockMs] = useState(Date.now());
   const [timeOffsetMs, setTimeOffsetMs] = useState(0);
@@ -421,6 +611,9 @@ export default function App() {
 
   const sessionIdRef = useRef<string | null>(null);
   const typingInputRef = useRef<HTMLInputElement | null>(null);
+  const suggestRootInputRef = useRef<HTMLInputElement | null>(null);
+  const dragGestureRef = useRef<DragGestureState | null>(null);
+  const suppressCardClickRef = useRef(false);
   const flashTimersRef = useRef<number[]>([]);
   const attemptTimersRef = useRef<number[]>([]);
   const motionTimersRef = useRef<number[]>([]);
@@ -459,11 +652,38 @@ export default function App() {
 
   const neighborHints = useMemo(() => neighborEdges.slice(0, 12), [neighborEdges]);
   const visibleVisitedRoots = useMemo(() => {
-    const roots = visitedRoots.length > 0 ? visitedRoots : committedPlain ? [committedPlain] : [];
-    return roots.slice(-18);
-  }, [committedPlain, visitedRoots]);
+    const roots =
+      session?.visitedRoots && session.visitedRoots.length > 0
+        ? session.visitedRoots
+        : visitedRoots.length > 0
+          ? visitedRoots
+          : committedPlain
+            ? [committedPlain]
+            : [];
+    return roots;
+  }, [committedPlain, session?.visitedRoots, visitedRoots]);
+  const journeyStartRoot = session?.visitedRoots?.[0] ?? session?.currentRoot ?? null;
+  const journeySolutionRequest = useMemo(() => {
+    if (
+      !session ||
+      session.mode !== 'journey' ||
+      session.status !== 'game_over' ||
+      !session.targetRoot ||
+      !journeyStartRoot
+    ) {
+      return null;
+    }
+
+    return {
+      sessionId: session.id,
+      fromRoot: journeyStartRoot,
+      toRoot: session.targetRoot,
+      types: session.types,
+    };
+  }, [journeyStartRoot, session]);
   const displayCountdownMs = session ? getCountdownMs(session, countdownMs) : countdownMs;
   const selectedSlotLabel = getSlotLabel(selectedIdx);
+  const selectedSlotCenter = selectedIdx !== null ? getStageSlotCenter(selectedIdx) : null;
   const activeComboKind: ComboKind | null =
     session?.combo?.permutationChain && session.combo.permutationChain >= 2
       ? 'permutation'
@@ -481,6 +701,37 @@ export default function App() {
       ),
     [activeComboKind, session],
   );
+  const currentSuccessStreak = session?.streak ?? 0;
+  const streakTier = useMemo(() => getStreakTier(currentSuccessStreak), [currentSuccessStreak]);
+  const nextStreakTier = useMemo(() => getNextStreakTier(currentSuccessStreak), [currentSuccessStreak]);
+  const streakTierProgress = useMemo(
+    () => getStreakTierProgress(currentSuccessStreak),
+    [currentSuccessStreak],
+  );
+  const activeStreakVisual =
+    currentSuccessStreak > 0 ? STREAK_VISUALS[streakTier.id] : STREAK_VISUALS.reset;
+  const activeStreakPulse = useMemo(() => {
+    if (attemptFlash && attemptFlashVisible && attemptFlash.streakResetFrom > 0) {
+      return {
+        tone: 'bust' as const,
+        title: 'Bust',
+        detail: `x${attemptFlash.streakResetFrom} -> 0`,
+        visible: true,
+      };
+    }
+
+    if (bonusFlash && bonusFlashVisible && bonusFlash.streakAfterMove > 0) {
+      const nextTier = getStreakTier(bonusFlash.streakAfterMove);
+      return {
+        tone: (nextTier.id === 'reset' ? 'x' : nextTier.id) as 'x' | 'y' | 'z' | 'viral',
+        title: isStreakTierUpgrade(bonusFlash.streakAfterMove) ? 'Up' : nextTier.shortLabel,
+        detail: `x${bonusFlash.streakAfterMove}`,
+        visible: true,
+      };
+    }
+
+    return null;
+  }, [attemptFlash, attemptFlashVisible, bonusFlash, bonusFlashVisible]);
   const keyboardIndicatorLabel =
     keyboardLayout.mode === 'hebrew' ? 'עברית' : keyboardLayout.mode === 'latin' ? 'ABC' : 'Detect';
   const keyboardIndicatorHint =
@@ -496,6 +747,9 @@ export default function App() {
         ? 'border-rose-200 bg-rose-50 text-rose-700'
         : 'border-slate-200 bg-white text-slate-600';
   const keyboardIndicatorDir = keyboardLayout.mode === 'hebrew' ? 'rtl' : 'ltr';
+  const pendingSuggestionsCount = rootSuggestions.filter(
+    (suggestion) => suggestion.status === 'pending',
+  ).length;
 
   const updateKeyboardLayoutFromSample = useCallback(
     (sample: string, source: KeyboardLayoutSource) => {
@@ -577,11 +831,18 @@ export default function App() {
     input.select();
   }, [refreshKeyboardLayout]);
 
+  const clearDragState = useCallback(() => {
+    dragGestureRef.current = null;
+    setDragSourceIdx(null);
+    setDragOverIdx(null);
+  }, []);
+
   const clearSelection = useCallback(() => {
+    clearDragState();
     setSelectedIdx(null);
     clearTypingInput();
     typingInputRef.current?.blur();
-  }, [clearTypingInput]);
+  }, [clearDragState, clearTypingInput]);
 
   const clearFlashTimers = useCallback(() => {
     flashTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
@@ -637,7 +898,13 @@ export default function App() {
     motionTimersRef.current = [shakeTimer];
   }, [clearMotionTimers]);
 
-  const applyPayload = useCallback((payload: SessionPayload, syncLetters: boolean) => {
+  const applyPayload = useCallback((
+    payload: SessionPayload,
+    options: {
+      syncLetters: boolean;
+      preserveSelection?: boolean;
+    },
+  ) => {
     setSession(payload.session);
     sessionIdRef.current = payload.session.id;
     setNeighborEdges(payload.options.edges);
@@ -645,9 +912,14 @@ export default function App() {
     setSyncClientMs(Date.now());
     setLastMove(payload.move);
 
-    if (syncLetters) {
+    const shouldPreserveSelection = Boolean(options.preserveSelection) && payload.session.status === 'active';
+
+    if (options.syncLetters) {
       setLetters(payload.session.currentRoot.split(''));
-      clearSelection();
+
+      if (!shouldPreserveSelection) {
+        clearSelection();
+      }
     }
 
     if (payload.session.status !== 'active') {
@@ -670,6 +942,85 @@ export default function App() {
     }
   }, []);
 
+  const loadRootSuggestions = useCallback(async () => {
+    setLoadingSuggestions(true);
+
+    try {
+      const payload = await requestJson<{ suggestions: RootSuggestion[] }>('/api/root-suggestions');
+      setRootSuggestions(payload.suggestions);
+    } catch (error: unknown) {
+      if (isApiError(error)) {
+        setSuggestionFeedback({ tone: 'error', text: error.message });
+      } else {
+        setSuggestionFeedback({ tone: 'error', text: 'Failed to load suggestions' });
+      }
+    } finally {
+      setLoadingSuggestions(false);
+    }
+  }, []);
+
+  const submitRootSuggestion = useCallback(async () => {
+    setSubmittingSuggestion(true);
+
+    try {
+      await requestJson<{ suggestion: RootSuggestion }>('/api/root-suggestions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          root: suggestedRootInput,
+          note: suggestionNoteInput,
+        }),
+      });
+
+      setSuggestedRootInput('');
+      setSuggestionNoteInput('');
+      setShowSuggestionPanel(false);
+      setSuggestionFeedback({ tone: 'success', text: 'Suggestion sent for admin review' });
+      await loadRootSuggestions();
+    } catch (error: unknown) {
+      if (isApiError(error)) {
+        setSuggestionFeedback({ tone: 'error', text: error.message });
+      } else {
+        setSuggestionFeedback({ tone: 'error', text: 'Could not send suggestion' });
+      }
+    } finally {
+      setSubmittingSuggestion(false);
+    }
+  }, [loadRootSuggestions, suggestedRootInput, suggestionNoteInput]);
+
+  const reviewRootSuggestionDecision = useCallback(
+    async (suggestionId: string, decision: 'approve' | 'reject') => {
+      setReviewingSuggestionId(suggestionId);
+
+      try {
+        await requestJson<{ suggestion: RootSuggestion }>(
+          `/api/root-suggestions/${encodeURIComponent(suggestionId)}/review`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ decision }),
+          },
+        );
+
+        setSuggestionFeedback({
+          tone: 'success',
+          text: decision === 'approve' ? 'Suggestion approved and added' : 'Suggestion rejected',
+        });
+        await loadRootSuggestions();
+        await checkBackendHealth();
+      } catch (error: unknown) {
+        if (isApiError(error)) {
+          setSuggestionFeedback({ tone: 'error', text: error.message });
+        } else {
+          setSuggestionFeedback({ tone: 'error', text: 'Could not review suggestion' });
+        }
+      } finally {
+        setReviewingSuggestionId(null);
+      }
+    },
+    [checkBackendHealth, loadRootSuggestions],
+  );
+
   const startSession = useCallback(async () => {
     resetApiTime();
     setLoadingSession(true);
@@ -682,6 +1033,9 @@ export default function App() {
     setAttemptFlashVisible(false);
     setReelFx(null);
     setTimerBurstActive(false);
+    setJourneySolution(null);
+    setLoadingJourneySolution(false);
+    setJourneySolutionError('');
     clearFlashTimers();
     clearAttemptTimers();
     clearMotionTimers();
@@ -714,7 +1068,7 @@ export default function App() {
         body: JSON.stringify(body),
       });
 
-      applyPayload(payload, true);
+      applyPayload(payload, { syncLetters: true });
       setVisitedRoots([payload.session.currentRoot]);
       setServerHealthy(true);
       setInfoText(
@@ -752,7 +1106,7 @@ export default function App() {
 
       try {
         const payload = await requestJson<SessionPayload>(`/api/session/${sessionId}/state`);
-        applyPayload(payload, syncLetters);
+        applyPayload(payload, { syncLetters });
       } catch (error: unknown) {
         if (isApiError(error)) {
           setErrorText(error.message);
@@ -766,6 +1120,7 @@ export default function App() {
     async (nextRoot: string) => {
       const sessionId = sessionIdRef.current;
       if (!sessionId) return;
+      const streakBeforeMove = session?.streak ?? 0;
 
       setSubmittingMove(true);
       setErrorText('');
@@ -777,7 +1132,14 @@ export default function App() {
           body: JSON.stringify({ root: nextRoot }),
         });
 
-        applyPayload(payload, true);
+        applyPayload(payload, {
+          syncLetters: true,
+          preserveSelection: selectedIdx !== null,
+        });
+
+        if (payload.session.status === 'active' && selectedIdx !== null && dragSourceIdx === null) {
+          focusTypingInput();
+        }
 
         if (payload.move?.ok) {
           const bonusMs = payload.move.bonusMs ?? 0;
@@ -785,12 +1147,23 @@ export default function App() {
           const elapsedMs = payload.move.elapsedMs ?? 0;
           const scoreGain = payload.move.scoreGain ?? 0;
           const chainBonusScore = payload.move.chainBonusScore ?? 0;
+          const streakBonusScore = payload.move.streakBonusScore ?? 0;
+          const streakBonusMs = payload.move.streakBonusMs ?? 0;
+          const comboBonusMs = payload.move.comboBonusMs ?? 0;
+          const streakAfterMove = payload.move.streakAfterMove ?? payload.session.streak ?? 0;
           const comboDescriptor = getComboDescriptor(
             payload.move.activeCombo,
             payload.move.comboCount,
             payload.move.samePositionIndex,
           );
-          const moveLabel = payload.move.edge?.type === 'SWAP' ? 'Permutation' : 'Root change';
+          const streakDescriptorForMove = getStreakDescriptor(streakAfterMove);
+          const comboSlots =
+            comboDescriptor && payload.move.edge
+              ? payload.move.edge.type === 'SWAP'
+                ? [payload.move.edge.positionA, payload.move.edge.positionB]
+                : [payload.move.edge.positionA]
+              : [];
+          const moveLabel = payload.move.edge?.type === 'SWAP' ? 'Swap jackpot' : 'Root change';
 
           clearAttemptTimers();
           setAttemptFlash(null);
@@ -802,16 +1175,22 @@ export default function App() {
           );
           triggerValidMotion();
           setInfoText(
-            `${moveLabel}. +${scoreGain} score${comboDescriptor ? ` · ${comboDescriptor.detail}` : ''}`,
+            `${moveLabel}. +${scoreGain} score${streakDescriptorForMove ? ` · ${streakDescriptorForMove.detail}` : ''}${comboDescriptor ? ` · ${comboDescriptor.detail}` : ''}`,
           );
           showBonusFlash({
             bonusMs,
             multiplier,
             elapsedMs,
             scoreGain,
+            moveType: payload.move.edge?.type ?? null,
             comboLabel: comboDescriptor?.label ?? null,
             comboCount: payload.move.comboCount ?? 0,
             chainBonusScore,
+            streakBonusScore,
+            streakBonusMs,
+            comboBonusMs,
+            streakAfterMove,
+            comboSlots,
           });
         }
       } catch (error: unknown) {
@@ -823,25 +1202,51 @@ export default function App() {
             'options' in error.data
           ) {
             const payload = error.data as SessionPayload;
-            applyPayload(payload, false);
+            applyPayload(payload, { syncLetters: false });
 
             if (payload.move?.reason === 'not_a_valid_neighbor') {
+              const streakTierBeforeReset =
+                streakBeforeMove > 0 ? getStreakTier(streakBeforeMove) : null;
               setLetters(payload.session.currentRoot.split(''));
               setInfoText('');
               setErrorText('');
+              clearFlashTimers();
+              setBonusFlash(null);
+              setBonusFlashVisible(false);
               triggerRejectedMotion();
-              showAttemptFlash({ tone: 'invalid', message: 'Invalid root', root: nextRoot });
-              focusTypingInput();
+              showAttemptFlash({
+                tone: 'invalid',
+                message: 'Invalid root',
+                root: nextRoot,
+                streakResetFrom: streakBeforeMove,
+                streakTierLabel: streakTierBeforeReset?.label ?? null,
+              });
+              if (dragSourceIdx === null && selectedIdx !== null) {
+                focusTypingInput();
+              }
               return;
             }
 
             if (payload.move?.reason === 'already_visited') {
+              const streakTierBeforeReset =
+                streakBeforeMove > 0 ? getStreakTier(streakBeforeMove) : null;
               setLetters(payload.session.currentRoot.split(''));
               setInfoText('');
               setErrorText('');
+              clearFlashTimers();
+              setBonusFlash(null);
+              setBonusFlashVisible(false);
               triggerRejectedMotion();
-              showAttemptFlash({ tone: 'repeat', message: 'Already did that', root: nextRoot });
-              focusTypingInput();
+              showAttemptFlash({
+                tone: 'repeat',
+                message: 'Already did that',
+                root: nextRoot,
+                streakResetFrom: streakBeforeMove,
+                streakTierLabel: streakTierBeforeReset?.label ?? null,
+              });
+              if (dragSourceIdx === null && selectedIdx !== null) {
+                focusTypingInput();
+              }
               return;
             }
           }
@@ -857,7 +1262,11 @@ export default function App() {
     [
       applyPayload,
       clearAttemptTimers,
+      clearFlashTimers,
+      dragSourceIdx,
       focusTypingInput,
+      session,
+      selectedIdx,
       showAttemptFlash,
       showBonusFlash,
       triggerRejectedMotion,
@@ -867,35 +1276,169 @@ export default function App() {
 
   const selectSlot = useCallback(
     (index: number) => {
+      clearDragState();
       setSelectedIdx(index);
       focusTypingInput();
     },
-    [focusTypingInput],
+    [clearDragState, focusTypingInput],
   );
+
+  const getSlotIndexAtPoint = useCallback((clientX: number, clientY: number) => {
+    if (typeof document === 'undefined') return null;
+    const target = document.elementFromPoint(clientX, clientY);
+    if (!(target instanceof Element)) return null;
+
+    const slotButton = target.closest('[data-slot-index]');
+    if (!(slotButton instanceof HTMLElement)) return null;
+
+    const value = Number(slotButton.dataset.slotIndex);
+    return Number.isInteger(value) ? value : null;
+  }, []);
 
   const handleCardClick = useCallback(
     (index: number) => {
+      if (suppressCardClickRef.current) {
+        suppressCardClickRef.current = false;
+        return;
+      }
+
       if (!session || session.status !== 'active') return;
 
-      if (selectedIdx === null) {
-        selectSlot(index);
-        return;
-      }
+      clearDragState();
 
       if (selectedIdx === index) {
-        focusTypingInput();
+        clearSelection();
         return;
       }
 
+      selectSlot(index);
+    },
+    [clearDragState, clearSelection, selectSlot, selectedIdx, session],
+  );
+
+  const handleCardPointerDown = useCallback(
+    (index: number, event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (!session || session.status !== 'active') return;
+      if (event.pointerType === 'mouse' && event.button !== 0) return;
+
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // Ignore capture failures; drag still works with standard bubbling.
+      }
+
+      dragGestureRef.current = {
+        pointerId: event.pointerId,
+        sourceIdx: index,
+        startX: event.clientX,
+        startY: event.clientY,
+        dragging: false,
+      };
+      setDragSourceIdx(null);
+      setDragOverIdx(null);
+    },
+    [session],
+  );
+
+  const handleCardPointerMove = useCallback(
+    (index: number, event: ReactPointerEvent<HTMLButtonElement>) => {
+      const gesture = dragGestureRef.current;
+      if (!gesture || gesture.pointerId !== event.pointerId || gesture.sourceIdx !== index) return;
+
+      const distance = Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY);
+      if (!gesture.dragging && distance < REEL_DRAG_THRESHOLD_PX) return;
+
+      if (!gesture.dragging) {
+        gesture.dragging = true;
+        setSelectedIdx(index);
+        clearTypingInput();
+        typingInputRef.current?.blur();
+        setDragSourceIdx(index);
+      }
+
+      event.preventDefault();
+
+      const hoveredIndex = getSlotIndexAtPoint(event.clientX, event.clientY);
+      setDragOverIdx(hoveredIndex !== null && hoveredIndex !== index ? hoveredIndex : null);
+    },
+    [clearTypingInput, getSlotIndexAtPoint],
+  );
+
+  const handleCardPointerUp = useCallback(
+    (index: number, event: ReactPointerEvent<HTMLButtonElement>) => {
+      const gesture = dragGestureRef.current;
+      if (!gesture || gesture.pointerId !== event.pointerId || gesture.sourceIdx !== index) return;
+
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch {
+        // Ignore capture release failures.
+      }
+
+      const dropIndex = gesture.dragging ? getSlotIndexAtPoint(event.clientX, event.clientY) : null;
+      const didDrag = gesture.dragging;
+      clearDragState();
+
+      if (!didDrag) return;
+
+      suppressCardClickRef.current = true;
+
+      if (dropIndex === null || dropIndex === index) {
+        setSelectedIdx(index);
+        clearTypingInput();
+        typingInputRef.current?.blur();
+        return;
+      }
+
+      setSelectedIdx(null);
+      clearTypingInput();
+      typingInputRef.current?.blur();
       setLetters((prev) => {
         const next = [...prev];
-        [next[selectedIdx], next[index]] = [next[index], next[selectedIdx]];
+        [next[index], next[dropIndex]] = [next[dropIndex], next[index]];
         return next;
       });
+    },
+    [clearDragState, clearTypingInput, getSlotIndexAtPoint],
+  );
+
+  const handleCardPointerCancel = useCallback(
+    (index: number, event: ReactPointerEvent<HTMLButtonElement>) => {
+      const gesture = dragGestureRef.current;
+      if (!gesture || gesture.pointerId !== event.pointerId || gesture.sourceIdx !== index) return;
+
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch {
+        // Ignore capture release failures.
+      }
+
+      const didDrag = gesture.dragging;
+      clearDragState();
+
+      if (!didDrag) return;
+
+      suppressCardClickRef.current = true;
+      setSelectedIdx(index);
+      clearTypingInput();
+      typingInputRef.current?.blur();
+    },
+    [clearDragState, clearTypingInput],
+  );
+
+  const handleStagePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (!session || session.status !== 'active' || (selectedIdx === null && dragSourceIdx === null)) {
+        return;
+      }
+
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest('[data-slot-index]')) return;
 
       clearSelection();
     },
-    [clearSelection, focusTypingInput, selectSlot, selectedIdx, session],
+    [clearSelection, dragSourceIdx, selectedIdx, session],
   );
 
   const applyTypedCharacter = useCallback(
@@ -907,18 +1450,35 @@ export default function App() {
       const mapped = mapKeyToGameChar(nextKey, activeTransliteration);
       if (!mapped) return;
 
+      clearDragState();
       setLetters((prev) => {
         const next = [...prev];
         next[selectedIdx] = mapped;
         return next;
       });
     },
-    [activeTransliteration, selectedIdx, session],
+    [activeTransliteration, clearDragState, selectedIdx, session],
   );
 
   useEffect(() => {
     void checkBackendHealth();
   }, [checkBackendHealth]);
+
+  useEffect(() => {
+    if (!showDebug && !showSuggestionPanel) return;
+    void loadRootSuggestions();
+  }, [loadRootSuggestions, showDebug, showSuggestionPanel]);
+
+  useEffect(() => {
+    if (!showSuggestionPanel) return;
+
+    const frameId = window.requestAnimationFrame(() => {
+      suggestRootInputRef.current?.focus();
+      suggestRootInputRef.current?.select();
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [showSuggestionPanel]);
 
   useEffect(() => () => {
     clearFlashTimers();
@@ -969,6 +1529,52 @@ export default function App() {
   }, [refreshSessionState, session]);
 
   useEffect(() => {
+    if (!journeySolutionRequest) {
+      setJourneySolution(null);
+      setLoadingJourneySolution(false);
+      setJourneySolutionError('');
+      return;
+    }
+
+    let cancelled = false;
+    setJourneySolution(null);
+    setLoadingJourneySolution(true);
+    setJourneySolutionError('');
+
+    void requestJson<PathPayload>('/api/path', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fromRoot: journeySolutionRequest.fromRoot,
+        toRoot: journeySolutionRequest.toRoot,
+        maxDepth: 25,
+        types: journeySolutionRequest.types,
+      }),
+    })
+      .then((payload) => {
+        if (cancelled) return;
+        setJourneySolution(payload);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setJourneySolution(null);
+        if (isApiError(error) && error.status === 404) {
+          setJourneySolutionError('No route found from the start root to the target.');
+          return;
+        }
+        setJourneySolutionError('Could not load the right path.');
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setLoadingJourneySolution(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [journeySolutionRequest]);
+
+  useEffect(() => {
     if (!session || session.status !== 'active') return;
     if (submittingMove) return;
     if (candidatePlain === session.currentRoot) return;
@@ -998,6 +1604,7 @@ export default function App() {
       }
 
       if (event.key === 'Escape') {
+        event.preventDefault();
         clearSelection();
         return;
       }
@@ -1007,6 +1614,7 @@ export default function App() {
       const mapped = mapKeyToGameChar(event.key, activeTransliteration);
       if (mapped) {
         event.preventDefault();
+        clearDragState();
         setLetters((prev) => {
           const next = [...prev];
           next[selectedIdx] = mapped;
@@ -1017,6 +1625,7 @@ export default function App() {
 
       if (event.key === 'Backspace') {
         event.preventDefault();
+        clearDragState();
         setLetters((prev) => {
           const next = [...prev];
           next[selectedIdx] = session.currentRoot[selectedIdx] ?? next[selectedIdx];
@@ -1031,6 +1640,7 @@ export default function App() {
   }, [
     activeTransliteration,
     clearSelection,
+    clearDragState,
     focusTypingInput,
     selectSlot,
     selectedIdx,
@@ -1041,14 +1651,20 @@ export default function App() {
   useEffect(() => {
     const neighborSample = [...neighborsSet].slice(0, 12);
     const activeBonus = bonusFlash
-      ? {
+        ? {
           bonusMs: bonusFlash.bonusMs,
           multiplier: bonusFlash.multiplier,
           elapsedMs: bonusFlash.elapsedMs,
           scoreGain: bonusFlash.scoreGain,
+          moveType: bonusFlash.moveType,
           comboLabel: bonusFlash.comboLabel,
           comboCount: bonusFlash.comboCount,
           chainBonusScore: bonusFlash.chainBonusScore,
+          streakBonusScore: bonusFlash.streakBonusScore,
+          streakBonusMs: bonusFlash.streakBonusMs,
+          comboBonusMs: bonusFlash.comboBonusMs,
+          streakAfterMove: bonusFlash.streakAfterMove,
+          comboSlots: bonusFlash.comboSlots,
           visible: bonusFlashVisible,
         }
       : null;
@@ -1057,6 +1673,8 @@ export default function App() {
           tone: attemptFlash.tone,
           message: attemptFlash.message,
           root: attemptFlash.root,
+          streakResetFrom: attemptFlash.streakResetFrom,
+          streakTierLabel: attemptFlash.streakTierLabel,
           visible: attemptFlashVisible,
         }
       : null;
@@ -1078,7 +1696,24 @@ export default function App() {
               targetRoot: session.targetRoot,
               score: session.score,
               streak: session.streak,
+              streakTier: {
+                label: streakTier.label,
+                range: formatStreakTierRange(streakTier),
+                bonusScore: streakTier.scoreBonus,
+                bonusTimeMs: streakTier.timeBonusMs,
+                nextTier: nextStreakTier
+                  ? {
+                      label: nextStreakTier.label,
+                      minStreak: nextStreakTier.minStreak,
+                      bonusScore: nextStreakTier.scoreBonus,
+                      bonusTimeMs: nextStreakTier.timeBonusMs,
+                    }
+                  : null,
+                progressPct: Math.round(streakTierProgress * 100),
+              },
               moveCount: session.moveCount,
+              visitedCount: session.visitedCount,
+              visitedRoots: session.visitedRoots ?? null,
               combo: session.combo ?? null,
               remainingMs: Math.round(remainingMs),
               config: {
@@ -1093,16 +1728,35 @@ export default function App() {
           candidateRoot: candidatePlain,
           selectedIndex: selectedIdx,
           selectedSlotLabel,
+          interactionMode: dragSourceIdx !== null ? 'drag' : 'edit',
+          dragSourceIndex: dragSourceIdx,
+          dragOverIndex: dragOverIdx,
           neighborsCount: neighborsSet.size,
           neighborsSample: neighborSample,
           visitedRootsVisible: visibleVisitedRoots,
         },
         bonusFlash: activeBonus,
         attemptFlash: activeAttempt,
+        streakPulse: activeStreakPulse,
         motion: activeMotion,
+        journeySolution: journeySolutionRequest
+          ? {
+              loading: loadingJourneySolution,
+              error: journeySolutionError || null,
+              fromRoot: journeySolutionRequest.fromRoot,
+              toRoot: journeySolutionRequest.toRoot,
+              distance: journeySolution?.distance ?? null,
+              path: journeySolution?.path ?? null,
+              stoppedAtRoot: session?.currentRoot ?? null,
+            }
+          : null,
         ui: {
           debugVisible: showDebug,
           transliterationPreset: activeTransliteration.id,
+          suggestionPanelOpen: showSuggestionPanel,
+          suggestionFeedback: suggestionFeedback?.text ?? null,
+          suggestionsCount: rootSuggestions.length,
+          pendingSuggestionsCount,
           keyboardLayout: {
             mode: keyboardLayout.mode,
             source: keyboardLayout.source,
@@ -1131,6 +1785,7 @@ export default function App() {
     bonusFlashVisible,
     attemptFlash,
     attemptFlashVisible,
+    activeStreakPulse,
     candidatePlain,
     committedPlain,
     errorText,
@@ -1138,14 +1793,27 @@ export default function App() {
     loadingSession,
     mode,
     neighborsSet,
+    pendingSuggestionsCount,
     remainingMs,
     reelFx,
     serverHealthy,
     showDebug,
+    showSuggestionPanel,
+    dragOverIdx,
+    dragSourceIdx,
     selectedIdx,
     selectedSlotLabel,
     session,
+    streakTier,
+    nextStreakTier,
+    streakTierProgress,
+    rootSuggestions.length,
+    suggestionFeedback?.text,
     submittingMove,
+    loadingJourneySolution,
+    journeySolution,
+    journeySolutionError,
+    journeySolutionRequest,
     keyboardLayout.mode,
     keyboardLayout.sample,
     keyboardLayout.source,
@@ -1180,10 +1848,17 @@ export default function App() {
     : !isActive
       ? formatReason(session.reason) || 'Run finished.'
       : selectedIdx === null
-        ? 'Tap any reel to focus it, then type on a Hebrew keyboard.'
-        : `${selectedSlotLabel} active. Type a Hebrew letter or tap another reel to swap.`;
+        ? 'Tap any reel to focus it, type on a Hebrew keyboard, or drag one reel onto another to swap.'
+        : dragSourceIdx === selectedIdx
+          ? `${selectedSlotLabel} is moving. Drop it on another reel to swap, or release to keep editing this reel.`
+        : `${selectedSlotLabel} selected. Type a Hebrew letter, drag any reel onto another to swap, or tap the same reel or outside the board to clear.`;
   const showSetupOverlay = !isActive;
   const showSummary = Boolean(session && !isActive);
+  const showJourneyFailureSolution = Boolean(showSummary && journeySolutionRequest);
+  const activeComboBurst =
+    bonusFlash && bonusFlashVisible && bonusFlash.comboLabel && bonusFlash.comboCount >= 2
+      ? getComboBurstAnchor(bonusFlash.comboSlots)
+      : null;
 
   return (
     <div className="relative min-h-screen overflow-hidden text-slate-900" dir="rtl">
@@ -1196,9 +1871,14 @@ export default function App() {
         multiplier={bonusFlash?.multiplier ?? 1}
         elapsedMs={bonusFlash?.elapsedMs ?? 0}
         scoreGain={bonusFlash?.scoreGain ?? 0}
+        moveType={bonusFlash?.moveType ?? null}
         comboLabel={bonusFlash?.comboLabel ?? null}
         comboCount={bonusFlash?.comboCount ?? 0}
         chainBonusScore={bonusFlash?.chainBonusScore ?? 0}
+        streakBonusScore={bonusFlash?.streakBonusScore ?? 0}
+        streakBonusMs={bonusFlash?.streakBonusMs ?? 0}
+        comboBonusMs={bonusFlash?.comboBonusMs ?? 0}
+        streakAfterMove={bonusFlash?.streakAfterMove ?? 0}
         visible={Boolean(bonusFlash && bonusFlashVisible)}
       />
 
@@ -1212,16 +1892,31 @@ export default function App() {
         {attemptFlash ? (
           <div
             className={[
-              'overflow-hidden rounded-[1.5rem] border px-5 py-4 text-sm font-black shadow-[0_20px_60px_-28px_rgba(15,23,42,0.82)] backdrop-blur',
+              'overflow-hidden rounded-[1.2rem] border px-4 py-3 text-sm font-black shadow-[0_18px_48px_-28px_rgba(15,23,42,0.7)] backdrop-blur',
               attemptFlash.tone === 'repeat'
                 ? 'border-amber-200 bg-amber-50/95 text-amber-800'
                 : 'border-rose-200 bg-rose-50/96 text-rose-700',
             ].join(' ')}
           >
-            <div className="text-[0.68rem] uppercase tracking-[0.26em] opacity-60">
-              {attemptFlash.tone === 'repeat' ? 'Repeated root' : 'Blocked move'}
+            <div className="flex flex-wrap items-center justify-center gap-2 text-[0.62rem] uppercase tracking-[0.22em] opacity-70">
+              <span>{attemptFlash.tone === 'repeat' ? 'Repeated root' : 'Blocked move'}</span>
+              {attemptFlash.streakResetFrom > 0 ? (
+                <span className="rounded-full bg-white/72 px-3 py-1 text-[0.6rem] font-black tracking-[0.2em] text-rose-700">
+                  Streak busted
+                </span>
+              ) : null}
             </div>
-            <div className="mt-1 text-lg">{attemptFlash.message}</div>
+            <div className="mt-1 text-base">{attemptFlash.message}</div>
+            {attemptFlash.streakResetFrom > 0 ? (
+              <div className="mt-2 flex flex-wrap items-center justify-center gap-2 text-[0.62rem] font-black uppercase tracking-[0.18em]">
+                <span className="rounded-full bg-white/78 px-3 py-1 text-slate-900">
+                  {attemptFlash.streakTierLabel
+                    ? `${attemptFlash.streakTierLabel} x${attemptFlash.streakResetFrom}`
+                    : `x${attemptFlash.streakResetFrom}`}
+                </span>
+                <span>Back to 0</span>
+              </div>
+            ) : null}
             <div className="mt-2 rounded-full bg-white/72 px-3 py-1 text-center font-mono text-sm font-black text-slate-900" dir={activeDisplayDir}>
               {formatDisplayRoot(attemptFlash.root, activeTransliteration)}
             </div>
@@ -1230,6 +1925,7 @@ export default function App() {
       </div>
 
       <button
+        id="debug-toggle-btn"
         type="button"
         onClick={() => setShowDebug((prev) => !prev)}
         className={[
@@ -1276,6 +1972,7 @@ export default function App() {
 
           if (event.key === 'Backspace') {
             event.preventDefault();
+            clearDragState();
             setLetters((prev) => {
               const next = [...prev];
               next[selectedIdx] = session.currentRoot[selectedIdx] ?? next[selectedIdx];
@@ -1308,8 +2005,13 @@ export default function App() {
             <span className="rounded-full border border-white/80 bg-white/76 px-3 py-1.5 text-[0.72rem] font-black uppercase tracking-[0.2em] text-slate-700">
               Roots {visitedCountValue}
             </span>
-            <span className="rounded-full border border-white/80 bg-white/76 px-3 py-1.5 text-[0.72rem] font-black uppercase tracking-[0.2em] text-slate-700">
-              Streak {streakValue}
+            <span
+              className={[
+                'px-3 py-1.5 text-[0.72rem] font-black uppercase tracking-[0.2em]',
+                activeStreakVisual.badge,
+              ].join(' ')}
+            >
+              {streakValue > 0 ? `x${streakValue}` : 'x0'}
             </span>
             {mode === 'journey' && session?.targetRoot ? (
               <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-[0.72rem] font-black uppercase tracking-[0.2em] text-amber-800" dir={activeDisplayDir}>
@@ -1329,11 +2031,20 @@ export default function App() {
               ].join(' ')}
             >
               <div className="absolute inset-0 z-0 bg-[radial-gradient(circle_at_50%_32%,rgba(247,236,204,0.78),rgba(210,186,140,0.92)_56%,rgba(148,117,79,0.94)_100%)]" />
+              {isActive && streakValue > 0 ? (
+                <div
+                  className={[
+                    'pointer-events-none absolute inset-[4%] z-[1] rounded-[2rem] opacity-70 streak-stage-wash',
+                    activeStreakVisual.stageWash,
+                  ].join(' ')}
+                />
+              ) : null}
 
               <div className="absolute inset-x-[14%] top-[7.4%] z-30">
                 <div
                   className={[
-                    'mx-auto w-full rounded-full border border-white/75 bg-white/72 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.88),0_10px_30px_rgba(15,23,42,0.08)] backdrop-blur-[2px]',
+                    'mx-auto w-full rounded-full border p-2 backdrop-blur-[2px]',
+                    activeStreakVisual.timerShell,
                     timerBurstActive ? 'timer-bonus-flash' : '',
                   ].join(' ')}
                 >
@@ -1346,7 +2057,76 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="absolute inset-0 z-10">
+              {isActive ? (
+                <div className="pointer-events-none absolute inset-x-[4%] top-[15.8%] z-30 flex justify-center md:inset-x-auto md:right-[4.1%] md:top-[14.1%]">
+                  <StreakBubble
+                    streak={streakValue}
+                    tier={streakTier}
+                    nextTier={nextStreakTier}
+                    progressPct={streakTierProgress}
+                    energized={Boolean(bonusFlash && bonusFlashVisible)}
+                    busted={Boolean(
+                      attemptFlash &&
+                        attemptFlashVisible &&
+                        attemptFlash.streakResetFrom > 0,
+                    )}
+                  />
+                </div>
+              ) : null}
+              {activeStreakPulse ? (
+                <div className="pointer-events-none absolute left-[7.5%] top-[14.9%] z-[31] md:left-[10.5%] md:top-[13.8%]">
+                  <StreakPulse
+                    tone={activeStreakPulse.tone}
+                    title={activeStreakPulse.title}
+                    detail={activeStreakPulse.detail}
+                    visible={activeStreakPulse.visible}
+                  />
+                </div>
+              ) : null}
+
+              {isActive && selectedIdx !== null && selectedSlotCenter ? (
+                <div
+                  className="pointer-events-none absolute z-[32]"
+                  style={{
+                    left: `${selectedSlotCenter.x}%`,
+                    top: `${Math.max(8, selectedSlotCenter.y - selectedSlotCenter.height / 2 - 7)}%`,
+                    transform: 'translate(-50%, -100%)',
+                  }}
+                >
+                  <div
+                    className={[
+                      'rounded-[1.2rem] px-4 py-3 text-center shadow-[0_22px_48px_-22px_rgba(14,165,233,0.48)] backdrop-blur',
+                      dragSourceIdx === selectedIdx
+                        ? 'border border-emerald-300/95 bg-emerald-50/96'
+                        : 'border border-sky-300/95 bg-sky-50/96',
+                    ].join(' ')}
+                  >
+                    <div
+                      className={[
+                        'text-[0.58rem] font-black uppercase tracking-[0.24em]',
+                        dragSourceIdx === selectedIdx ? 'text-emerald-700' : 'text-sky-700',
+                      ].join(' ')}
+                    >
+                      {dragSourceIdx === selectedIdx ? 'Dragging Reel' : 'Selected Reel'}
+                    </div>
+                    <div className="mt-1 text-sm font-black text-slate-950">{selectedSlotLabel}</div>
+                    <div
+                      className={[
+                        'mt-1 text-[0.65rem] font-bold',
+                        dragSourceIdx === selectedIdx ? 'text-emerald-800' : 'text-sky-800',
+                      ].join(' ')}
+                    >
+                      {dragSourceIdx === selectedIdx
+                        ? dragOverIdx !== null
+                          ? `Release on ${SLOT_LABELS[dragOverIdx]} to swap`
+                          : 'Drop on another reel to swap'
+                        : 'Type now, or drag any reel onto another to swap'}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="absolute inset-0 z-10" onPointerDown={handleStagePointerDown}>
                 {letters.map((ch, index) => {
                   const slot = STAGE_SLOT_LAYOUT[index];
 
@@ -1361,23 +2141,37 @@ export default function App() {
                         height: `${slot.height}%`,
                       }}
                     >
+                      {isActive && selectedIdx === index ? (
+                        <div className="active-slot-aura pointer-events-none absolute inset-[-7%] z-[1] rounded-[1.3rem]" />
+                      ) : null}
                       <LetterCard
                         key={`slot-${index}`}
                         letter={toDisplayChar(ch, activeTransliteration)}
                         imgSrc={imgForChar(ch)}
                         selected={selectedIdx === index}
-                        swapTarget={isActive && selectedIdx !== null && selectedIdx !== index}
+                        swapTarget={isActive && dragOverIdx === index}
+                        dimmed={
+                          isActive &&
+                          selectedIdx !== null &&
+                          selectedIdx !== index &&
+                          dragSourceIdx === null
+                        }
+                        dragging={dragSourceIdx === index}
                         disabled={!session || session.status !== 'active'}
                         index={index}
                         slotLabel={SLOT_LABELS[index]}
                         footerLabel={
                           !isActive
                             ? 'locked'
-                            : selectedIdx === index
-                              ? 'type Hebrew'
-                              : selectedIdx !== null
-                                ? 'tap to swap'
-                                : 'tap to edit'
+                            : dragOverIdx === index
+                              ? 'release to swap'
+                              : dragSourceIdx === index
+                                ? 'drop on another reel'
+                                : selectedIdx === index
+                                  ? 'tap again to clear'
+                                  : selectedIdx !== null
+                                    ? 'tap to refocus'
+                                    : 'tap or drag'
                         }
                         variant="embedded"
                         className={[
@@ -1386,11 +2180,30 @@ export default function App() {
                           reelFx === 'shake' ? 'reel-shake' : '',
                         ].join(' ')}
                         onClick={() => handleCardClick(index)}
+                        onPointerDown={(event) => handleCardPointerDown(index, event)}
+                        onPointerMove={(event) => handleCardPointerMove(index, event)}
+                        onPointerUp={(event) => handleCardPointerUp(index, event)}
+                        onPointerCancel={(event) => handleCardPointerCancel(index, event)}
                       />
                     </div>
                   );
                 })}
               </div>
+
+              {activeComboBurst && bonusFlash ? (
+                <div className="pointer-events-none absolute inset-0 z-[35]">
+                  <ComboBurst
+                    comboLabel={bonusFlash.comboLabel}
+                    comboCount={bonusFlash.comboCount}
+                    chainBonusScore={bonusFlash.chainBonusScore}
+                    comboBonusMs={bonusFlash.comboBonusMs}
+                    leftPct={activeComboBurst.leftPct}
+                    topPct={activeComboBurst.topPct}
+                    placement={activeComboBurst.placement}
+                    visible={bonusFlashVisible}
+                  />
+                </div>
+              ) : null}
 
               <div className="pointer-events-none absolute inset-0 z-[15]">
                 {STAGE_SLOT_LAYOUT.map((slot, index) => (
@@ -1489,6 +2302,81 @@ export default function App() {
                       </div>
                     ) : null}
 
+                    {showJourneyFailureSolution ? (
+                      <div
+                        id="journey-solution-card"
+                        className="mt-4 rounded-[1.6rem] border border-amber-200 bg-[linear-gradient(135deg,rgba(255,251,235,0.98)_0%,rgba(255,243,199,0.92)_100%)] p-4 shadow-[0_22px_56px_-34px_rgba(180,83,9,0.48)]"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-amber-700">
+                              Right path
+                            </div>
+                            <div className="mt-2 text-sm font-bold leading-6 text-slate-900">
+                              {loadingJourneySolution
+                                ? 'Finding the shortest route from the start root to the target.'
+                                : journeySolution
+                                  ? `Shortest route: ${journeySolution.distance} ${journeySolution.distance === 1 ? 'move' : 'moves'}.`
+                                  : journeySolutionError || 'Could not load the right path.'}
+                            </div>
+                            <div className="mt-1 text-xs font-semibold text-slate-600">
+                              You stopped at{' '}
+                              <span className="font-mono font-black text-slate-900" dir={activeDisplayDir}>
+                                {formatDisplayRoot(session?.currentRoot ?? '', activeTransliteration)}
+                              </span>
+                              .
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap gap-2 text-[0.64rem] font-black uppercase tracking-[0.18em] text-slate-600">
+                            <span className="rounded-full border border-white/80 bg-white/85 px-3 py-1.5">
+                              Start{' '}
+                              <span className="font-mono text-slate-900" dir={activeDisplayDir}>
+                                {formatDisplayRoot(journeySolutionRequest?.fromRoot ?? '', activeTransliteration)}
+                              </span>
+                            </span>
+                            <span className="rounded-full border border-white/80 bg-white/85 px-3 py-1.5">
+                              Target{' '}
+                              <span className="font-mono text-slate-900" dir={activeDisplayDir}>
+                                {formatDisplayRoot(journeySolutionRequest?.toRoot ?? '', activeTransliteration)}
+                              </span>
+                            </span>
+                          </div>
+                        </div>
+
+                        {journeySolution?.path.length ? (
+                          <div
+                            id="journey-solution-path"
+                            className="mt-3 flex flex-wrap items-center gap-2"
+                            dir="ltr"
+                          >
+                            {journeySolution.path.map((root, index) => (
+                              <div key={`${root}-${index}`} className="flex items-center gap-2">
+                                <div className="rounded-[1.15rem] border border-white/80 bg-white/88 px-3 py-2 shadow-sm">
+                                  <div className="text-[0.56rem] font-black uppercase tracking-[0.22em] text-amber-700">
+                                    {index === 0
+                                      ? 'Start'
+                                      : index === journeySolution.path.length - 1
+                                        ? 'Target'
+                                        : `Step ${index + 1}`}
+                                  </div>
+                                  <div
+                                    className="mt-1 font-mono text-sm font-black text-slate-950"
+                                    dir={activeDisplayDir}
+                                  >
+                                    {formatDisplayRoot(root, activeTransliteration)}
+                                  </div>
+                                </div>
+                                {index < journeySolution.path.length - 1 ? (
+                                  <span className="text-lg font-black text-amber-600">→</span>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
                     <div className="mt-4 grid gap-3 md:grid-cols-[repeat(3,minmax(0,1fr))_auto]">
                       {[
                         {
@@ -1499,13 +2387,13 @@ export default function App() {
                         },
                         {
                           id: 'bonusBase',
-                          label: 'Bonus X',
+                          label: 'Base bonus',
                           value: bonusBaseMs,
                           setValue: setBonusBaseMs,
                         },
                         {
                           id: 'bonusWindow',
-                          label: 'Window Y',
+                          label: 'Speed window',
                           value: bonusWindowMs,
                           setValue: setBonusWindowMs,
                         },
@@ -1550,7 +2438,8 @@ export default function App() {
 
                     {!showSummary ? (
                       <p className="mt-3 text-sm leading-6 text-slate-600">
-                        Repeat roots are blocked. Quick hits pay bigger time refills. Type using a Hebrew keyboard.
+                        Repeat roots are blocked. Quick hits pay bigger time refills. X bonus lives at 1-3,
+                        Y at 4-8, Z at 9-12, and every miss drops you back to 0.
                       </p>
                     ) : null}
                   </div>
@@ -1597,27 +2486,35 @@ export default function App() {
                       <>
                         <span>Tap a reel</span>
                         <span className="rounded-full bg-slate-950 px-3 py-1 text-white">Then type Hebrew</span>
+                        <span className="text-slate-500">Or drag a reel onto another to swap</span>
                         <span className="text-slate-500">Keys 1 2 3 also work</span>
                       </>
                     ) : (
                       <>
-                        <span className="rounded-full bg-amber-100 px-3 py-1 text-amber-800">
-                          {selectedSlotLabel} active
-                        </span>
-                        <button
-                          type="button"
-                          onClick={focusTypingInput}
-                          className="rounded-full border border-amber-200 bg-white px-3 py-1 text-amber-700 transition hover:bg-amber-50"
+                        <span
+                          className={[
+                            'rounded-full px-3 py-1',
+                            dragSourceIdx === selectedIdx
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-sky-100 text-sky-800',
+                          ].join(' ')}
                         >
-                          Type Hebrew
-                        </button>
-                        <span className="text-slate-500">or tap another reel to swap</span>
+                          {dragSourceIdx === selectedIdx
+                            ? `${selectedSlotLabel} dragging`
+                            : `${selectedSlotLabel} selected`}
+                        </span>
+                        <span className="rounded-full border border-sky-200 bg-white px-3 py-1 text-slate-600">
+                          Type a Hebrew letter
+                        </span>
+                        <span className="rounded-full border border-emerald-200 bg-white px-3 py-1 text-slate-600">
+                          Or drag any reel to swap
+                        </span>
                         <button
                           type="button"
                           onClick={clearSelection}
                           className="rounded-full border border-slate-200 bg-white px-3 py-1 text-slate-600 transition hover:bg-slate-50"
                         >
-                          Cancel
+                          Clear Focus
                         </button>
                       </>
                     )}
@@ -1649,10 +2546,99 @@ export default function App() {
         <footer className="pb-1">
           <div className="mb-2 flex items-center justify-between gap-3">
             <div className="text-[0.72rem] font-black uppercase tracking-[0.28em] text-slate-500">Roots made</div>
-            <div className="text-sm font-bold text-slate-700">{visitedCountValue} total</div>
+            <div className="flex items-center gap-2">
+              <button
+                id="suggest-root-btn"
+                type="button"
+                onClick={() => {
+                  setSuggestionFeedback(null);
+                  setShowSuggestionPanel((prev) => !prev);
+                }}
+                className="rounded-full border border-sky-200 bg-sky-50 px-3 py-2 text-[0.72rem] font-black uppercase tracking-[0.18em] text-sky-700 transition hover:bg-sky-100"
+              >
+                Suggest root
+              </button>
+              <div className="text-sm font-bold text-slate-700">{visitedCountValue} total</div>
+            </div>
           </div>
-          <div className="overflow-x-auto rounded-full border border-white/75 bg-white/68 px-3 py-3 shadow-sm backdrop-blur">
-            <div className="flex min-w-max items-center gap-2" dir="ltr">
+          {showSuggestionPanel ? (
+            <div className="mb-3 rounded-[1.5rem] border border-sky-200/80 bg-white/84 p-4 shadow-[0_18px_42px_-28px_rgba(14,165,233,0.34)] backdrop-blur">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-sky-600">
+                    Suggest a root
+                  </div>
+                  <div className="mt-1 text-sm font-bold text-slate-900">
+                    Submit a root for admin review. Approved roots become playable.
+                  </div>
+                </div>
+                <button
+                  id="suggest-root-cancel"
+                  type="button"
+                  onClick={() => setShowSuggestionPanel(false)}
+                  className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[0.72rem] font-black uppercase tracking-[0.18em] text-slate-600 transition hover:bg-slate-50"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,14rem)_1fr]">
+                <label className="rounded-[1.15rem] border border-slate-200 bg-slate-50 px-4 py-3">
+                  <div className="text-[0.66rem] font-black uppercase tracking-[0.22em] text-slate-500">
+                    Root
+                  </div>
+                  <input
+                    id="suggest-root-input"
+                    ref={suggestRootInputRef}
+                    value={suggestedRootInput}
+                    onChange={(event) => setSuggestedRootInput(event.target.value)}
+                    placeholder="ברק / b.r.q"
+                    className="mt-2 w-full bg-transparent font-mono text-base font-black text-slate-950 outline-none"
+                    dir="ltr"
+                  />
+                </label>
+                <label className="rounded-[1.15rem] border border-slate-200 bg-slate-50 px-4 py-3">
+                  <div className="text-[0.66rem] font-black uppercase tracking-[0.22em] text-slate-500">
+                    Why add it?
+                  </div>
+                  <textarea
+                    id="suggest-root-note"
+                    value={suggestionNoteInput}
+                    onChange={(event) => setSuggestionNoteInput(event.target.value)}
+                    rows={3}
+                    placeholder="Optional note for the reviewer"
+                    className="mt-2 w-full resize-none bg-transparent text-sm font-semibold text-slate-700 outline-none"
+                  />
+                </label>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                <div className="text-xs font-semibold text-slate-500">
+                  Hebrew, dotted transliteration, or plain transliteration all work.
+                </div>
+                <button
+                  id="suggest-root-submit"
+                  type="button"
+                  onClick={() => void submitRootSuggestion()}
+                  disabled={submittingSuggestion}
+                  className="rounded-full bg-slate-950 px-4 py-2 text-[0.72rem] font-black uppercase tracking-[0.2em] text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {submittingSuggestion ? 'Sending' : 'Send for review'}
+                </button>
+              </div>
+            </div>
+          ) : null}
+          <div className="rounded-[1.6rem] border border-white/75 bg-white/68 px-3 py-3 shadow-sm backdrop-blur">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
+                Full run history
+              </div>
+              <div className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">
+                {visibleVisitedRoots.length} shown
+              </div>
+            </div>
+            <div className="max-h-36 overflow-y-auto">
+              <div className="flex flex-wrap gap-2" dir="ltr">
               {visibleVisitedRoots.length === 0 ? (
                 <span className="rounded-full border border-dashed border-slate-300 px-4 py-2 text-sm font-semibold text-slate-500">
                   New roots will land here
@@ -1678,7 +2664,18 @@ export default function App() {
                 })
               )}
             </div>
+            </div>
           </div>
+          {suggestionFeedback ? (
+            <p
+              className={[
+                'mt-3 text-sm font-semibold',
+                suggestionFeedback.tone === 'success' ? 'text-emerald-700' : 'text-rose-700',
+              ].join(' ')}
+            >
+              {suggestionFeedback.text}
+            </p>
+          ) : null}
           {errorText ? <p className="mt-3 text-sm font-semibold text-rose-700">{errorText}</p> : null}
         </footer>
       </main>
@@ -1793,6 +2790,7 @@ export default function App() {
               </button>
             ) : null}
             <button
+              id="debug-restart-btn"
               type="button"
               onClick={startSession}
               disabled={loadingSession}
@@ -1806,6 +2804,7 @@ export default function App() {
             <label className="rounded-[1.25rem] border border-slate-200 bg-white p-3">
               <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">Start root override</div>
               <input
+                id="debug-start-root-input"
                 value={startRootInput}
                 onChange={(event) => setStartRootInput(event.target.value)}
                 placeholder="אבה / a.b.h"
@@ -1823,6 +2822,100 @@ export default function App() {
                 dir="ltr"
               />
             </label>
+          </div>
+
+          <div className="mt-4 rounded-[1.25rem] border border-slate-200 bg-white p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
+                  Root suggestions
+                </div>
+                <div className="mt-1 text-sm font-black text-slate-900">
+                  {loadingSuggestions ? 'Loading…' : `${pendingSuggestionsCount} pending`}
+                </div>
+              </div>
+              <button
+                id="admin-refresh-suggestions"
+                type="button"
+                onClick={() => void loadRootSuggestions()}
+                className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-black uppercase tracking-[0.18em] text-slate-700 transition hover:bg-slate-100"
+              >
+                Refresh
+              </button>
+            </div>
+
+            <div className="mt-3 grid gap-2">
+              {rootSuggestions.length === 0 ? (
+                <div className="rounded-[1rem] border border-dashed border-slate-200 px-3 py-4 text-sm font-semibold text-slate-500">
+                  No suggestions yet
+                </div>
+              ) : (
+                rootSuggestions.slice(0, 12).map((suggestion) => (
+                  <div
+                    key={suggestion.id}
+                    className="rounded-[1rem] border border-slate-200 bg-slate-50 px-3 py-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div
+                          className="font-mono text-sm font-black text-slate-950"
+                          dir={activeDisplayDir}
+                        >
+                          {toDisplayDotted(suggestion.root.split(''), activeTransliteration)}
+                        </div>
+                        <div className="mt-1 text-xs font-semibold text-slate-500">
+                          {new Date(suggestion.createdAtMs).toLocaleString()}
+                        </div>
+                      </div>
+                      <span
+                        className={[
+                          'rounded-full border px-2.5 py-1 text-[0.64rem] font-black uppercase tracking-[0.18em]',
+                          suggestion.status === 'approved'
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                            : suggestion.status === 'rejected'
+                              ? 'border-rose-200 bg-rose-50 text-rose-700'
+                              : 'border-amber-200 bg-amber-50 text-amber-700',
+                        ].join(' ')}
+                      >
+                        {suggestion.status}
+                      </span>
+                    </div>
+
+                    {suggestion.note ? (
+                      <div className="mt-2 text-sm font-semibold text-slate-700">{suggestion.note}</div>
+                    ) : null}
+                    {suggestion.reviewNote ? (
+                      <div className="mt-2 text-xs font-semibold text-slate-500">
+                        Review: {suggestion.reviewNote}
+                      </div>
+                    ) : null}
+
+                    {suggestion.status === 'pending' ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          id={`approve-suggestion-${suggestion.id}`}
+                          type="button"
+                          onClick={() => void reviewRootSuggestionDecision(suggestion.id, 'approve')}
+                          disabled={reviewingSuggestionId === suggestion.id}
+                          className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-black uppercase tracking-[0.18em] text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          id={`reject-suggestion-${suggestion.id}`}
+                          type="button"
+                          onClick={() => void reviewRootSuggestionDecision(suggestion.id, 'reject')}
+                          disabled={reviewingSuggestionId === suggestion.id}
+                          className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-black uppercase tracking-[0.18em] text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                ))
+              )}
+            </div>
           </div>
 
           <div className="mt-4 rounded-[1.25rem] border border-slate-200 bg-slate-50 p-3">
