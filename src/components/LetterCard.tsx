@@ -5,7 +5,6 @@ type Props = {
   imgSrc?: string | null;
   selected?: boolean;
   swapTarget?: boolean;
-  dimmed?: boolean;
   dragging?: boolean;
   disabled?: boolean;
   index: number;
@@ -25,7 +24,6 @@ export default function LetterCard({
   imgSrc = null,
   selected = false,
   swapTarget = false,
-  dimmed = false,
   dragging = false,
   disabled = false,
   index,
@@ -48,7 +46,7 @@ export default function LetterCard({
   }, [imgSrc]);
 
   const isEmbedded = variant === 'embedded';
-  const showEmbeddedTag = isEmbedded && (selected || swapTarget || dimmed || dragging);
+  const showEmbeddedTag = isEmbedded && (selected || swapTarget || dragging);
   const showImage = Boolean(imgSrc) && imageStatus === 'loaded';
   const showText = !showImage;
 
@@ -84,7 +82,6 @@ export default function LetterCard({
             : isEmbedded
               ? ''
               : 'border-[#e9d9a6] hover:border-[#e4ca7d]',
-        dimmed ? 'mosaic-slot-dimmed' : '',
         className,
       ].join(' ')}
       aria-label={`Letter slot ${index + 1}: ${letter || 'empty'} (${slotLabel})`}
@@ -105,9 +102,7 @@ export default function LetterCard({
               : 'bg-[radial-gradient(circle_at_50%_14%,rgba(56,189,248,0.58),transparent_42%),radial-gradient(circle_at_50%_84%,rgba(224,242,254,0.42),transparent_36%),linear-gradient(180deg,rgba(8,47,73,0.08),rgba(255,255,255,0))] opacity-100'
             : swapTarget
               ? 'bg-[radial-gradient(circle_at_50%_16%,rgba(16,185,129,0.24),transparent_45%)] opacity-100'
-              : dimmed
-                ? 'bg-[linear-gradient(180deg,rgba(15,23,42,0.24),rgba(15,23,42,0.12))] opacity-100'
-                : 'opacity-0',
+              : 'opacity-0',
         ].join(' ')}
       />
       {isEmbedded && selected ? (
@@ -141,9 +136,17 @@ export default function LetterCard({
           draggable={false}
           className={[
             isEmbedded
-              ? 'absolute inset-[3%] h-[94%] w-[94%] object-cover mix-blend-multiply saturate-[0.82]'
+              ? 'absolute inset-[3%] h-[94%] w-[94%] object-cover mix-blend-multiply transition-[opacity,transform,filter] duration-200'
               : 'absolute inset-[11%] h-[78%] w-[78%] object-cover mix-blend-multiply',
-            showImage ? (isEmbedded ? 'opacity-80' : 'opacity-92') : 'opacity-0',
+            showImage
+              ? isEmbedded
+                ? selected
+                  ? 'scale-[1.03] opacity-[0.96] saturate-[1.02] brightness-[1.04]'
+                  : swapTarget
+                    ? 'opacity-[0.92] saturate-[0.96] brightness-[1.01]'
+                    : 'opacity-[0.9] saturate-[0.94] brightness-[0.99]'
+                : 'opacity-92'
+              : 'opacity-0',
           ].join(' ')}
           onLoad={() => setImageStatus('loaded')}
           onError={() => setImageStatus('error')}
@@ -191,9 +194,7 @@ export default function LetterCard({
               ? 'border border-sky-200 bg-sky-50/98 text-sky-900 shadow-[0_8px_18px_rgba(14,165,233,0.18)]'
               : swapTarget
                 ? 'bg-emerald-50/96 text-emerald-700'
-                : dimmed
-                  ? 'bg-slate-950/62 text-white/92'
-                  : 'bg-white/76 text-slate-600',
+                : 'bg-white/76 text-slate-600',
             showEmbeddedTag ? 'opacity-100' : isEmbedded ? 'opacity-0' : '',
           ].join(' ')}
         >

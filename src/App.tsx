@@ -2150,12 +2150,6 @@ export default function App() {
                         imgSrc={imgForChar(ch)}
                         selected={selectedIdx === index}
                         swapTarget={isActive && dragOverIdx === index}
-                        dimmed={
-                          isActive &&
-                          selectedIdx !== null &&
-                          selectedIdx !== index &&
-                          dragSourceIdx === null
-                        }
                         dragging={dragSourceIdx === index}
                         disabled={!session || session.status !== 'active'}
                         index={index}
