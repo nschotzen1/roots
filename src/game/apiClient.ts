@@ -1,10 +1,16 @@
 import rootsRaw from './data/roots_hebrew_scraped.txt?raw';
-import { getStreakTier } from './streakTiers';
+import {
+  createComboState,
+  resolveMoveOutcome,
+  type ComboKind,
+  type ComboState,
+  type MoveType,
+} from './playRules';
 
 type GameMode = 'journey' | 'survival';
 type SessionStatus = 'active' | 'game_over' | 'completed';
-type MoveType = 'REPLACE' | 'SWAP';
-type ComboKind = 'permutation' | 'same_position';
+type RoomStatus = 'active' | 'completed';
+type RoomPhase = 'open_claim' | 'controlled';
 
 type SessionConfig = {
   countdownMs?: number;
@@ -103,6 +109,84 @@ type SessionPayload = {
   move: MoveSummary | null;
 };
 
+type RoomPlayerSnapshot = {
+  id: string;
+  name: string;
+  joinedAtMs: number;
+  score: number;
+  streak: number;
+  longestStreak: number;
+  takeovers: number;
+  combo: {
+    permutationChain: number;
+    samePositionChain: number;
+    samePositionIndex: number | null;
+  };
+  isHost: boolean;
+  isSelf: boolean;
+};
+
+type RoomPlayerAuth = {
+  id: string;
+  name: string;
+  token: string;
+  isHost: boolean;
+  joinedAtMs: number;
+};
+
+type RoomSnapshot = {
+  id: string;
+  code: string;
+  version: number;
+  status: RoomStatus;
+  phase: RoomPhase;
+  reason: string | null;
+  currentRoot: string;
+  currentRootDotted: string;
+  moveCount: number;
+  visitedRoots: string[];
+  visitedCount: number;
+  controllerPlayerId: string | null;
+  controllerExpiresAtMs: number | null;
+  controllerRemainingMs: number;
+  turnStartedAtMs: number;
+  createdAtMs: number;
+  updatedAtMs: number;
+  startedAtMs: number;
+  allowRevisit: boolean;
+  types: MoveType[];
+  letterBank: string[] | null;
+  config: {
+    countdownMs: number;
+    bonusBaseMs: number;
+    bonusWindowMs: number;
+    controlWindowMs: number;
+    maxControlMs: number;
+    maxPlayers: number;
+  };
+  players: RoomPlayerSnapshot[];
+  options: {
+    root: string;
+    dottedRoot: string;
+    count: number;
+    neighbors: string[];
+    edges: NeighborEdge[];
+  };
+};
+
+type RoomPayload = {
+  room: RoomSnapshot;
+  player: RoomPlayerAuth | null;
+  move: RoomMoveSummary | null;
+};
+
+type RoomMoveSummary = MoveSummary & {
+  byPlayerId?: string;
+  byPlayerName?: string;
+  controlChange?: 'claimed' | 'extended' | 'released' | 'none';
+  controlRemainingMs?: number;
+};
+
 type RootSuggestionStatus = 'pending' | 'approved' | 'rejected';
 
 type RootSuggestion = {
@@ -141,12 +225,7 @@ type InternalSession = {
   score: number;
   streak: number;
   moveCount: number;
-  combo: {
-    permutationChain: number;
-    samePositionChain: number;
-    lastMoveType: MoveType | null;
-    lastReplacePosition: number | null;
-  };
+  combo: ComboState;
   visited: Set<string>;
   allowRevisit: boolean;
   types: MoveType[];
@@ -158,6 +237,53 @@ type InternalSession = {
     bonusBaseMs: number;
     bonusWindowMs: number;
   };
+};
+
+type InternalRoomPlayer = {
+  id: string;
+  token: string;
+  name: string;
+  joinedAtMs: number;
+  score: number;
+  streak: number;
+  longestStreak: number;
+  takeovers: number;
+  combo: ComboState;
+  isHost: boolean;
+};
+
+type InternalRoom = {
+  id: string;
+  code: string;
+  version: number;
+  status: RoomStatus;
+  phase: RoomPhase;
+  reason: string | null;
+  createdAtMs: number;
+  updatedAtMs: number;
+  startedAtMs: number;
+  currentRoot: string;
+  moveCount: number;
+  visited: Set<string>;
+  controllerPlayerId: string | null;
+  controllerExpiresAtMs: number | null;
+  turnStartedAtMs: number;
+  allowRevisit: boolean;
+  types: MoveType[];
+  letterBank: string[] | null;
+  config: {
+    countdownMs: number;
+    bonusBaseMs: number;
+    bonusWindowMs: number;
+    controlWindowMs: number;
+    maxControlMs: number;
+    maxPlayers: number;
+  };
+  players: InternalRoomPlayer[];
+};
+
+type StoredRoom = Omit<InternalRoom, 'visited'> & {
+  visited: string[];
 };
 
 type MoveEdge = {
@@ -190,22 +316,13 @@ const USE_REMOTE_API = API_BASE.length > 0;
 const DEFAULT_ROOT_LENGTH = 3;
 const LOCAL_SUGGESTIONS_STORAGE_KEY = 'roots.suggestions.v1';
 const LOCAL_APPROVED_ROOTS_STORAGE_KEY = 'roots.approvedRoots.v1';
+const LOCAL_MULTIPLAYER_ROOMS_STORAGE_KEY = 'roots.multiplayerRooms.v1';
 const MOVE_TYPES: MoveType[] = ['REPLACE', 'SWAP'];
 const SESSION_MODES: GameMode[] = ['journey', 'survival'];
-const MOVE_SCORE_RULES = {
-  REPLACE: {
-    baseScore: 100,
-    chainStepScore: 35,
-    chainStepTimeMs: 250,
-    moveBonusMs: 0,
-  },
-  SWAP: {
-    baseScore: 170,
-    chainStepScore: 80,
-    chainStepTimeMs: 950,
-    moveBonusMs: 900,
-  },
-};
+const DEFAULT_ROOM_CONTROL_WINDOW_MS = 8_000;
+const DEFAULT_ROOM_MAX_CONTROL_MS = 12_000;
+const DEFAULT_ROOM_MAX_PLAYERS = 4;
+const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const HEB_TO_GAME: Record<string, string> = {
   א: 'a',
   ב: 'b',
@@ -266,6 +383,7 @@ let store: Store = {
 const sessions = new Map<string, InternalSession>();
 let localSuggestions: RootSuggestion[] | null = null;
 let localApprovedRoots: string[] | null = null;
+let localRoomsByCode: Map<string, InternalRoom> | null = null;
 
 const getNow = () => Date.now() + localTimeOffsetMs;
 
@@ -301,12 +419,10 @@ const expectValue = <T,>(
   return value as NonNullable<T> as T;
 };
 
-const createComboState = () => ({
-  permutationChain: 0,
-  samePositionChain: 0,
-  lastMoveType: null as MoveType | null,
-  lastReplacePosition: null as number | null,
-});
+const createOpaqueId = (prefix: string) =>
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 
 const normalizeMoveTypes = (types: unknown): MoveType[] => {
   if (!Array.isArray(types)) return [...MOVE_TYPES];
@@ -545,6 +661,207 @@ const parseStoredArray = <T,>(value: string | null, fallback: T[]): T[] => {
   } catch {
     return fallback;
   }
+};
+
+const normalizeRoomCode = (value: unknown) => {
+  const normalized = String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '')
+    .trim();
+  return normalized.length >= 4 ? normalized : null;
+};
+
+const normalizePlayerName = (value: unknown, fallback = 'Player') => {
+  const trimmed = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (trimmed || fallback).slice(0, 24);
+};
+
+const serializeRoomPlayer = (
+  player: InternalRoomPlayer,
+  viewerPlayerId: string | null,
+): RoomPlayerSnapshot => ({
+  id: player.id,
+  name: player.name,
+  joinedAtMs: player.joinedAtMs,
+  score: player.score,
+  streak: player.streak,
+  longestStreak: player.longestStreak,
+  takeovers: player.takeovers,
+  combo: {
+    permutationChain: player.combo.permutationChain,
+    samePositionChain: player.combo.samePositionChain,
+    samePositionIndex: player.combo.lastReplacePosition,
+  },
+  isHost: player.isHost,
+  isSelf: player.id === viewerPlayerId,
+});
+
+const serializeRoomPlayerAuth = (player: InternalRoomPlayer): RoomPlayerAuth => ({
+  id: player.id,
+  name: player.name,
+  token: player.token,
+  isHost: player.isHost,
+  joinedAtMs: player.joinedAtMs,
+});
+
+const serializeStoredRoom = (room: InternalRoom): StoredRoom => ({
+  ...room,
+  visited: [...room.visited],
+});
+
+const deserializeStoredRoom = (value: StoredRoom | Partial<StoredRoom>) => {
+  const code = normalizeRoomCode(value.code);
+  const currentRoot = parseBodyRoot(value.currentRoot);
+  if (!code || !currentRoot || !Array.isArray(value.players) || value.players.length === 0) return null;
+
+  const players = value.players.reduce<InternalRoomPlayer[]>((acc, candidate, index) => {
+    if (!candidate || typeof candidate !== 'object') return acc;
+    const { id, token } = candidate as { id?: unknown; token?: unknown };
+    if (typeof id !== 'string' || !id || typeof token !== 'string' || !token) return acc;
+
+    acc.push({
+      id,
+      token,
+      name: normalizePlayerName((candidate as Partial<InternalRoomPlayer>).name, `Player ${index + 1}`),
+      joinedAtMs: Number((candidate as Partial<InternalRoomPlayer>).joinedAtMs) || getNow(),
+      score: Math.max(0, Number((candidate as Partial<InternalRoomPlayer>).score) || 0),
+      streak: Math.max(0, Number((candidate as Partial<InternalRoomPlayer>).streak) || 0),
+      longestStreak: Math.max(0, Number((candidate as Partial<InternalRoomPlayer>).longestStreak) || 0),
+      takeovers: Math.max(0, Number((candidate as Partial<InternalRoomPlayer>).takeovers) || 0),
+      combo: {
+        permutationChain: Math.max(
+          0,
+          Math.floor(Number((candidate as Partial<InternalRoomPlayer>).combo?.permutationChain) || 0),
+        ),
+        samePositionChain: Math.max(
+          0,
+          Math.floor(Number((candidate as Partial<InternalRoomPlayer>).combo?.samePositionChain) || 0),
+        ),
+        lastMoveType:
+          (candidate as Partial<InternalRoomPlayer>).combo?.lastMoveType === 'SWAP'
+            ? 'SWAP'
+            : (candidate as Partial<InternalRoomPlayer>).combo?.lastMoveType === 'REPLACE'
+              ? 'REPLACE'
+              : null,
+        lastReplacePosition:
+          Number.isInteger((candidate as Partial<InternalRoomPlayer>).combo?.lastReplacePosition)
+            ? Number((candidate as Partial<InternalRoomPlayer>).combo?.lastReplacePosition)
+            : null,
+      },
+      isHost: Boolean((candidate as Partial<InternalRoomPlayer>).isHost) || index === 0,
+    });
+    return acc;
+  }, []);
+
+  if (players.length === 0) return null;
+
+  return {
+    id: typeof value.id === 'string' && value.id ? value.id : createOpaqueId('room'),
+    code,
+    version: Math.max(1, Math.floor(Number(value.version) || 1)),
+    status: value.status === 'completed' ? 'completed' : 'active',
+    phase: value.phase === 'controlled' ? 'controlled' : 'open_claim',
+    reason: typeof value.reason === 'string' && value.reason ? value.reason : null,
+    createdAtMs: Number(value.createdAtMs) || getNow(),
+    updatedAtMs: Number(value.updatedAtMs) || getNow(),
+    startedAtMs: Number(value.startedAtMs) || Number(value.createdAtMs) || getNow(),
+    currentRoot,
+    moveCount: Math.max(0, Math.floor(Number(value.moveCount) || 0)),
+    visited: new Set(
+      Array.isArray(value.visited)
+        ? value.visited
+            .map((candidate) => parseBodyRoot(candidate))
+            .filter((candidate): candidate is string => Boolean(candidate))
+        : [currentRoot],
+    ),
+    controllerPlayerId: typeof value.controllerPlayerId === 'string' ? value.controllerPlayerId : null,
+    controllerExpiresAtMs:
+      Number.isFinite(Number(value.controllerExpiresAtMs)) && Number(value.controllerExpiresAtMs) > 0
+        ? Number(value.controllerExpiresAtMs)
+        : null,
+    turnStartedAtMs: Number(value.turnStartedAtMs) || Number(value.startedAtMs) || getNow(),
+    allowRevisit: Boolean(value.allowRevisit),
+    types: normalizeMoveTypes(value.types),
+    letterBank: normalizeLetterBank(value.letterBank),
+    config: {
+      countdownMs: normalizeNumber(value.config?.countdownMs, 45_000, 10_000, 300_000),
+      bonusBaseMs: normalizeNumber(value.config?.bonusBaseMs, 4_000, 500, 60_000),
+      bonusWindowMs: normalizeNumber(value.config?.bonusWindowMs, 6_000, 1_000, 60_000),
+      controlWindowMs: normalizeNumber(
+        value.config?.controlWindowMs,
+        DEFAULT_ROOM_CONTROL_WINDOW_MS,
+        2_000,
+        30_000,
+      ),
+      maxControlMs: normalizeNumber(
+        value.config?.maxControlMs,
+        DEFAULT_ROOM_MAX_CONTROL_MS,
+        3_000,
+        60_000,
+      ),
+      maxPlayers: normalizeNumber(
+        value.config?.maxPlayers,
+        DEFAULT_ROOM_MAX_PLAYERS,
+        2,
+        16,
+      ),
+    },
+    players,
+  };
+};
+
+const loadLocalRoomState = () => {
+  if (!canUseLocalStorage()) {
+    if (!localRoomsByCode) {
+      localRoomsByCode = new Map();
+    }
+    return;
+  }
+
+  const storedRooms = parseStoredArray<StoredRoom | Partial<StoredRoom>>(
+    window.localStorage.getItem(LOCAL_MULTIPLAYER_ROOMS_STORAGE_KEY),
+    [],
+  );
+
+  localRoomsByCode = new Map(
+    storedRooms
+      .map((room) => deserializeStoredRoom(room))
+      .filter((room): room is InternalRoom => Boolean(room))
+      .map((room) => [room.code, room]),
+  );
+};
+
+const ensureLocalRoomState = () => {
+  loadLocalRoomState();
+  return localRoomsByCode as Map<string, InternalRoom>;
+};
+
+const persistLocalRoomState = () => {
+  if (!canUseLocalStorage()) return;
+  if (!localRoomsByCode) {
+    localRoomsByCode = new Map();
+  }
+  const rooms = [...localRoomsByCode.values()].map((room) => serializeStoredRoom(room));
+  window.localStorage.setItem(LOCAL_MULTIPLAYER_ROOMS_STORAGE_KEY, JSON.stringify(rooms));
+};
+
+const createRoomCode = () =>
+  Array.from(
+    { length: 6 },
+    () => ROOM_CODE_ALPHABET.charAt(Math.floor(Math.random() * ROOM_CODE_ALPHABET.length)),
+  ).join('');
+
+const generateUniqueRoomCode = (): string => {
+  const rooms = ensureLocalRoomState();
+
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const code = createRoomCode();
+    if (!rooms.has(code)) return code;
+  }
+
+  throw createApiError(500, { error: 'room_code_generation_failed' });
 };
 
 const serializeSuggestion = (value: Partial<RootSuggestion> & { root: string; id: string }): RootSuggestion => ({
@@ -1006,10 +1323,7 @@ const createSession = ({
   const safeBonusWindow = normalizeNumber(bonusWindowMs, 6_000, 1_000, 60_000);
 
   const session: InternalSession = {
-    id:
-      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-        ? crypto.randomUUID()
-        : `session-${Math.random().toString(36).slice(2, 10)}`,
+    id: createOpaqueId('session'),
     mode: normalizeSessionMode(mode),
     status: 'active',
     reason: null,
@@ -1051,55 +1365,10 @@ const endSession = (
   session.updatedAtMs = now;
 };
 
-const getBonusOutcome = (elapsedMs: number, bonusWindowMs: number) => {
-  if (elapsedMs <= bonusWindowMs / 3) return { bonusMultiplier: 2, speedTier: 'lightning' };
-  if (elapsedMs <= bonusWindowMs / 2) return { bonusMultiplier: 1.5, speedTier: 'rapid' };
-  if (elapsedMs <= bonusWindowMs) return { bonusMultiplier: 1, speedTier: 'clean' };
-  if (elapsedMs <= bonusWindowMs * 2) return { bonusMultiplier: 2 / 3, speedTier: 'late' };
-  return { bonusMultiplier: 1 / 2, speedTier: 'clutch' };
-};
-
 const applyInvalidMove = (session: InternalSession, now = getNow()) => {
   session.streak = 0;
   session.combo = createComboState();
   session.updatedAtMs = now;
-};
-
-const getNextComboState = (session: InternalSession, moveEdge: NeighborEdge) => {
-  if (moveEdge.type === 'SWAP') {
-    return {
-      permutationChain: session.combo.lastMoveType === 'SWAP' ? session.combo.permutationChain + 1 : 1,
-      samePositionChain: 0,
-      lastMoveType: 'SWAP' as MoveType,
-      lastReplacePosition: null,
-    };
-  }
-
-  return {
-    permutationChain: 0,
-    samePositionChain:
-      session.combo.lastMoveType === 'REPLACE' && session.combo.lastReplacePosition === moveEdge.positionA
-        ? session.combo.samePositionChain + 1
-        : 1,
-    lastMoveType: 'REPLACE' as MoveType,
-    lastReplacePosition: moveEdge.positionA,
-  };
-};
-
-const getComboSummary = (comboState: InternalSession['combo'], moveEdge: NeighborEdge) => {
-  const scoreRule = MOVE_SCORE_RULES[moveEdge.type] || MOVE_SCORE_RULES.REPLACE;
-  const comboCount = moveEdge.type === 'SWAP' ? comboState.permutationChain : comboState.samePositionChain;
-  const chainBonusScore = Math.max(0, comboCount - 1) * scoreRule.chainStepScore;
-  const comboBonusMs = Math.max(0, comboCount - 1) * scoreRule.chainStepTimeMs;
-
-  return {
-    activeCombo: moveEdge.type === 'SWAP' ? ('permutation' as ComboKind) : ('same_position' as ComboKind),
-    comboCount,
-    chainBonusScore,
-    comboBonusMs,
-    baseScore: scoreRule.baseScore,
-    moveBonusMs: scoreRule.moveBonusMs,
-  };
 };
 
 const applyValidMove = (session: InternalSession, nextRoot: string, moveEdge: NeighborEdge, now = getNow()) => {
@@ -1110,55 +1379,29 @@ const applyValidMove = (session: InternalSession, nextRoot: string, moveEdge: Ne
   }
 
   const elapsedMs = Math.max(0, now - session.turnStartedAtMs);
-  const { bonusMultiplier, speedTier } = getBonusOutcome(elapsedMs, session.config.bonusWindowMs);
-  const comboState = getNextComboState(session, moveEdge);
-  const { activeCombo, comboCount, chainBonusScore, comboBonusMs, baseScore, moveBonusMs } =
-    getComboSummary(comboState, moveEdge);
-  const streakAfterMove = session.streak + 1;
-  const streakTier = getStreakTier(streakAfterMove);
-  const streakBonusScore = streakTier.scoreBonus;
-  const streakBonusMs = streakTier.timeBonusMs;
-  const bonusMs =
-    Math.round(session.config.bonusBaseMs * bonusMultiplier) +
-    moveBonusMs +
-    streakBonusMs +
-    comboBonusMs;
+  const { nextComboState, ...moveOutcome } = resolveMoveOutcome({
+    comboState: session.combo,
+    moveEdge,
+    streakBeforeMove: session.streak,
+    elapsedMs,
+    remainingBeforeMs,
+    config: session.config,
+  });
 
   session.currentRoot = nextRoot;
   session.visited.add(nextRoot);
   session.moveCount += 1;
-  session.streak = streakAfterMove;
-  session.combo = comboState;
-
-  const scoreGain = Math.max(
-    10,
-    Math.round((baseScore + chainBonusScore) * bonusMultiplier) + streakBonusScore,
-  );
-  session.score += scoreGain;
-
-  session.countdownRemainingMs = remainingBeforeMs + bonusMs;
+  session.streak = moveOutcome.streakAfterMove;
+  session.combo = nextComboState;
+  session.score += moveOutcome.scoreGain;
+  session.countdownRemainingMs = moveOutcome.nextRemainingMs;
   session.turnStartedAtMs = now;
   session.updatedAtMs = now;
 
   return {
     remainingBeforeMs,
     elapsedMs,
-    bonusMultiplier,
-    speedTier,
-    scoreGain,
-    bonusMs,
-    nextRemainingMs: session.countdownRemainingMs,
-    baseScore,
-    chainBonusScore,
-    streakBonusScore,
-    streakBonusMs,
-    comboBonusMs,
-    activeCombo,
-    comboCount,
-    permutationChain: comboState.permutationChain,
-    samePositionChain: comboState.samePositionChain,
-    samePositionIndex: comboState.lastReplacePosition,
-    streakAfterMove,
+    ...moveOutcome,
   };
 };
 
@@ -1198,6 +1441,78 @@ const getNeighborOptionsForSession = (session: InternalSession, limit = 500) =>
     visited: session.allowRevisit ? [] : [...session.visited],
     letterBank: session.letterBank,
   });
+
+const getNeighborOptionsForRoom = (room: InternalRoom, limit = 500) =>
+  getNeighbors(room.currentRoot, {
+    types: room.types,
+    limit,
+    excludeVisited: !room.allowRevisit,
+    visited: room.allowRevisit ? [] : [...room.visited],
+    letterBank: room.letterBank,
+  });
+
+const getRoomControllerRemainingMs = (room: InternalRoom, now = getNow()) => {
+  if (!room.controllerExpiresAtMs) return 0;
+  return Math.max(0, room.controllerExpiresAtMs - now);
+};
+
+const findRoomPlayerByToken = (room: InternalRoom, token: unknown) => {
+  const normalized = typeof token === 'string' && token.trim() ? token.trim() : null;
+  if (!normalized) return null;
+  return room.players.find((player) => player.token === normalized) ?? null;
+};
+
+const serializeRoomPayload = async (
+  room: InternalRoom,
+  {
+    player,
+    playerToken = null,
+    neighborEdges,
+    move = null,
+    now = getNow(),
+  }: {
+    player?: InternalRoomPlayer | null;
+    playerToken?: string | null;
+    neighborEdges?: NeighborEdge[];
+    move?: RoomMoveSummary | null;
+    now?: number;
+  } = {},
+): Promise<RoomPayload> => {
+  const resolvedPlayer = player ?? findRoomPlayerByToken(room, playerToken);
+  const edges = neighborEdges ?? (await getNeighborOptionsForRoom(room));
+  const controllerRemainingMs = getRoomControllerRemainingMs(room, now);
+
+  return {
+    room: {
+      id: room.id,
+      code: room.code,
+      version: room.version,
+      status: room.status,
+      phase: room.phase,
+      reason: room.reason,
+      currentRoot: room.currentRoot,
+      currentRootDotted: toDottedRoot(room.currentRoot),
+      moveCount: room.moveCount,
+      visitedRoots: [...room.visited],
+      visitedCount: room.visited.size,
+      controllerPlayerId: room.controllerPlayerId,
+      controllerExpiresAtMs: room.controllerExpiresAtMs,
+      controllerRemainingMs,
+      turnStartedAtMs: room.turnStartedAtMs,
+      createdAtMs: room.createdAtMs,
+      updatedAtMs: room.updatedAtMs,
+      startedAtMs: room.startedAtMs,
+      allowRevisit: room.allowRevisit,
+      types: room.types,
+      letterBank: room.letterBank,
+      config: room.config,
+      players: room.players.map((candidate) => serializeRoomPlayer(candidate, resolvedPlayer?.id ?? null)),
+      options: formatNeighborPayload(room.currentRoot, edges),
+    },
+    player: resolvedPlayer ? serializeRoomPlayerAuth(resolvedPlayer) : null,
+    move,
+  };
+};
 
 const parseMs = (value: unknown, fallback: number) => {
   const parsed = Number(value);
@@ -1283,7 +1598,8 @@ const handleHealth = async () => ({
   ok: true,
   roots: await countRoots(),
   pendingSuggestions: (localSuggestions ?? []).filter((suggestion) => suggestion.status === 'pending').length,
-  storageBackend: 'browser-memory',
+  activeRooms: ensureLocalRoomState().size,
+  storageBackend: canUseLocalStorage() ? 'local-storage' : 'browser-memory',
   ts: getNow(),
 });
 
@@ -1393,6 +1709,388 @@ const handleGetNextOptions = async (body: Record<string, unknown>) => {
   });
 
   return formatNeighborPayload(safeRoot, edges);
+};
+
+const getRoomByCode = (roomCode: string) => {
+  const normalizedCode = expectValue(normalizeRoomCode(roomCode), 404, { error: 'room_not_found' });
+  return expectValue(ensureLocalRoomState().get(normalizedCode), 404, {
+    error: 'room_not_found',
+    code: normalizedCode,
+  });
+};
+
+const createRoomPlayer = ({
+  name,
+  fallbackName,
+  isHost,
+  now,
+}: {
+  name: unknown;
+  fallbackName: string;
+  isHost: boolean;
+  now: number;
+}): InternalRoomPlayer => ({
+  id: createOpaqueId('player'),
+  token: createOpaqueId('player-token'),
+  name: normalizePlayerName(name, fallbackName),
+  joinedAtMs: now,
+  score: 0,
+  streak: 0,
+  longestStreak: 0,
+  takeovers: 0,
+  combo: createComboState(),
+  isHost,
+});
+
+const reconcileRoomControlState = (room: InternalRoom, now = getNow()) => {
+  if (!room.controllerPlayerId || getRoomControllerRemainingMs(room, now) > 0) return false;
+
+  room.controllerPlayerId = null;
+  room.controllerExpiresAtMs = null;
+  room.phase = 'open_claim';
+  room.turnStartedAtMs = now;
+  room.updatedAtMs = now;
+  room.version += 1;
+  return true;
+};
+
+const applyInvalidRoomMove = (room: InternalRoom, player: InternalRoomPlayer, now = getNow()) => {
+  const didChange =
+    player.streak > 0 ||
+    player.combo.permutationChain > 0 ||
+    player.combo.samePositionChain > 0 ||
+    player.combo.lastMoveType !== null ||
+    player.combo.lastReplacePosition !== null;
+
+  player.streak = 0;
+  player.combo = createComboState();
+
+  if (didChange) {
+    room.updatedAtMs = now;
+    room.version += 1;
+  }
+
+  return didChange;
+};
+
+const buildRoomMoveSummary = (
+  player: InternalRoomPlayer,
+  move: Partial<RoomMoveSummary>,
+): RoomMoveSummary => ({
+  ok: Boolean(move.ok),
+  byPlayerId: player.id,
+  byPlayerName: player.name,
+  controlChange: move.controlChange ?? 'none',
+  ...move,
+});
+
+const failRoomMove = async ({
+  status,
+  room,
+  player,
+  reason,
+  move,
+  now = getNow(),
+}: {
+  status: number;
+  room: InternalRoom;
+  player: InternalRoomPlayer;
+  reason: string;
+  move?: Partial<RoomMoveSummary>;
+  now?: number;
+}): Promise<never> => {
+  const neighbors = room.status === 'active' ? await getNeighborOptionsForRoom(room) : [];
+  throw createApiError(
+    status,
+    await serializeRoomPayload(room, {
+      player,
+      neighborEdges: neighbors,
+      now,
+      move: buildRoomMoveSummary(player, {
+        ok: false,
+        reason,
+        ...move,
+      }),
+    }),
+  );
+};
+
+const handleRoomMove = async (roomCode: string, body: Record<string, unknown>) => {
+  const room = getRoomByCode(roomCode);
+  const rooms = ensureLocalRoomState();
+  const now = getNow();
+  const controlStateChanged = reconcileRoomControlState(room, now);
+  if (controlStateChanged) {
+    rooms.set(room.code, room);
+    persistLocalRoomState();
+  }
+
+  const player = expectValue(
+    findRoomPlayerByToken(room, body.playerToken ?? body.token),
+    401,
+    { error: 'player_not_in_room', code: room.code },
+  );
+
+  if (room.status !== 'active') {
+    fail(
+      409,
+      await serializeRoomPayload(room, {
+        player,
+        now,
+        move: buildRoomMoveSummary(player, {
+          ok: false,
+          reason: room.reason || 'room_not_active',
+        }),
+      }),
+    );
+  }
+
+  const candidateRoot = expectValue(parseBodyRoot(body.root), 400, { error: 'root is required' });
+
+  if (room.controllerPlayerId && room.controllerPlayerId !== player.id) {
+    await failRoomMove({
+      status: 409,
+      room,
+      player,
+      reason: 'control_locked',
+      move: {
+        controlChange: 'none',
+        controlRemainingMs: getRoomControllerRemainingMs(room, now),
+      },
+      now,
+    });
+  }
+
+  if (candidateRoot === room.currentRoot) {
+    if (applyInvalidRoomMove(room, player, now) || controlStateChanged) {
+      rooms.set(room.code, room);
+      persistLocalRoomState();
+    }
+    await failRoomMove({
+      status: 400,
+      room,
+      player,
+      reason: 'same_root',
+      now,
+    });
+  }
+
+  if (!room.allowRevisit && room.visited.has(candidateRoot)) {
+    if (applyInvalidRoomMove(room, player, now) || controlStateChanged) {
+      rooms.set(room.code, room);
+      persistLocalRoomState();
+    }
+    await failRoomMove({
+      status: 400,
+      room,
+      player,
+      reason: 'already_visited',
+      now,
+    });
+  }
+
+  const moveEdge = await getDirectMove(room.currentRoot, candidateRoot, {
+    types: room.types,
+    letterBank: room.letterBank,
+  });
+
+  if (!moveEdge) {
+    if (applyInvalidRoomMove(room, player, now) || controlStateChanged) {
+      rooms.set(room.code, room);
+      persistLocalRoomState();
+    }
+    await failRoomMove({
+      status: 400,
+      room,
+      player,
+      reason: 'not_a_valid_neighbor',
+      now,
+    });
+  }
+
+  const safeMoveEdge = expectValue(moveEdge, 500, { error: 'move_edge_resolution_failed' });
+  const hadController = room.controllerPlayerId === player.id;
+  const remainingBeforeMs = hadController
+    ? getRoomControllerRemainingMs(room, now)
+    : room.config.controlWindowMs;
+  const elapsedMs = Math.max(0, now - room.turnStartedAtMs);
+  const { nextComboState, nextRemainingMs, ...moveOutcome } = resolveMoveOutcome({
+    comboState: player.combo,
+    moveEdge: safeMoveEdge,
+    streakBeforeMove: player.streak,
+    elapsedMs,
+    remainingBeforeMs,
+    config: room.config,
+  });
+  const nextControlRemainingMs = Math.min(room.config.maxControlMs, nextRemainingMs);
+  const controlChange = hadController ? 'extended' : 'claimed';
+
+  player.combo = nextComboState;
+  player.streak = moveOutcome.streakAfterMove;
+  player.longestStreak = Math.max(player.longestStreak, player.streak);
+  player.score += moveOutcome.scoreGain;
+  if (!hadController) {
+    player.takeovers += 1;
+  }
+
+  room.currentRoot = candidateRoot;
+  room.visited.add(candidateRoot);
+  room.moveCount += 1;
+  room.controllerPlayerId = player.id;
+  room.controllerExpiresAtMs = now + nextControlRemainingMs;
+  room.turnStartedAtMs = now;
+  room.phase = 'controlled';
+  room.reason = null;
+
+  const neighbors = await getNeighborOptionsForRoom(room);
+  if (neighbors.length === 0) {
+    room.status = 'completed';
+    room.reason = 'no_moves';
+    room.controllerPlayerId = null;
+    room.controllerExpiresAtMs = null;
+    room.phase = 'open_claim';
+  }
+
+  room.updatedAtMs = now;
+  room.version += 1;
+  ensureLocalRoomState().set(room.code, room);
+  persistLocalRoomState();
+
+  return serializeRoomPayload(room, {
+    player,
+    neighborEdges: neighbors,
+    now,
+    move: buildRoomMoveSummary(player, {
+      ok: true,
+      ...moveOutcome,
+      edge: safeMoveEdge,
+      remainingBeforeMs,
+      elapsedMs,
+      controlChange,
+      controlRemainingMs: room.controllerPlayerId === player.id ? nextControlRemainingMs : 0,
+    }),
+  });
+};
+
+const handleCreateRoom = async (body: Record<string, unknown>) => {
+  const types = normalizeMoveTypes(body.types ?? body.allowedTypes);
+  const allowRevisit = Boolean(body.allow_revisit ?? body.allowRevisit ?? false);
+  const letterBank = normalizeLetterBank(body.letter_bank ?? body.letterBank);
+  const optionsLimit = Math.min(Math.max(Number(body.optionsLimit) || 500, 1), 5000);
+  const requestedRoot = parseBodyRoot(body.startRoot ?? body.root);
+  const startSelection = await selectPlayableStartRoot({
+    requestedRoot,
+    types,
+    allowRevisit,
+    letterBank,
+  });
+
+  if (startSelection.error) fail(400, { error: startSelection.error });
+
+  const startRoot = expectValue(startSelection.root, 500, { error: 'start_root_resolution_failed' });
+  const now = getNow();
+  const hostPlayer = createRoomPlayer({
+    name: body.playerName ?? body.name,
+    fallbackName: 'Host',
+    isHost: true,
+    now,
+  });
+  const room: InternalRoom = {
+    id: createOpaqueId('room'),
+    code: generateUniqueRoomCode(),
+    version: 1,
+    status: 'active',
+    phase: 'open_claim',
+    reason: null,
+    createdAtMs: now,
+    updatedAtMs: now,
+    startedAtMs: now,
+    currentRoot: startRoot,
+    moveCount: 0,
+    visited: new Set([startRoot]),
+    controllerPlayerId: null,
+    controllerExpiresAtMs: null,
+    turnStartedAtMs: now,
+    allowRevisit,
+    types,
+    letterBank,
+    config: {
+      countdownMs: normalizeNumber(body.countdownMs ?? body.initialTurnMs, 45_000, 10_000, 300_000),
+      bonusBaseMs: normalizeNumber(body.bonusBaseMs ?? body.baseTurnMs, 4_000, 500, 60_000),
+      bonusWindowMs: normalizeNumber(body.bonusWindowMs, 6_000, 1_000, 60_000),
+      controlWindowMs: normalizeNumber(
+        body.controlWindowMs ?? body.claimWindowMs,
+        DEFAULT_ROOM_CONTROL_WINDOW_MS,
+        2_000,
+        30_000,
+      ),
+      maxControlMs: normalizeNumber(
+        body.maxControlMs,
+        DEFAULT_ROOM_MAX_CONTROL_MS,
+        3_000,
+        60_000,
+      ),
+      maxPlayers: normalizeNumber(body.maxPlayers, DEFAULT_ROOM_MAX_PLAYERS, 2, 16),
+    },
+    players: [hostPlayer],
+  };
+
+  ensureLocalRoomState().set(room.code, room);
+  persistLocalRoomState();
+  const neighbors = await getNeighborOptionsForRoom(room, optionsLimit);
+  return serializeRoomPayload(room, { player: hostPlayer, neighborEdges: neighbors, now });
+};
+
+const handleJoinRoom = async (roomCode: string, body: Record<string, unknown>) => {
+  const room = getRoomByCode(roomCode);
+  const now = getNow();
+  const rooms = ensureLocalRoomState();
+  let didChangeRoom = reconcileRoomControlState(room, now);
+  const existingPlayer = findRoomPlayerByToken(room, body.playerToken ?? body.token);
+
+  if (existingPlayer) {
+    if (didChangeRoom) persistLocalRoomState();
+    const neighbors = room.status === 'active' ? await getNeighborOptionsForRoom(room) : [];
+    return serializeRoomPayload(room, { player: existingPlayer, neighborEdges: neighbors, now });
+  }
+
+  if (room.players.length >= room.config.maxPlayers) {
+    fail(409, {
+      error: 'room_full',
+      code: room.code,
+      maxPlayers: room.config.maxPlayers,
+    });
+  }
+
+  const player = createRoomPlayer({
+    name: body.playerName ?? body.name,
+    fallbackName: `Player ${room.players.length + 1}`,
+    isHost: false,
+    now,
+  });
+
+  room.players.push(player);
+  room.updatedAtMs = now;
+  room.version += 1;
+  rooms.set(room.code, room);
+  didChangeRoom = true;
+
+  if (didChangeRoom) persistLocalRoomState();
+  const neighbors = room.status === 'active' ? await getNeighborOptionsForRoom(room) : [];
+  return serializeRoomPayload(room, { player, neighborEdges: neighbors, now });
+};
+
+const handleRoomState = async (roomCode: string, playerToken: unknown) => {
+  const room = getRoomByCode(roomCode);
+  const now = getNow();
+  const didChangeRoom = reconcileRoomControlState(room, now);
+  if (didChangeRoom) persistLocalRoomState();
+  const neighbors = room.status === 'active' ? await getNeighborOptionsForRoom(room) : [];
+  return serializeRoomPayload(room, {
+    player: findRoomPlayerByToken(room, playerToken),
+    neighborEdges: neighbors,
+    now,
+  });
 };
 
 const handleStartSession = async (body: Record<string, unknown>) => {
@@ -1622,6 +2320,10 @@ const requestLocalJson = async <T,>(path: string, init?: RequestInit): Promise<T
     return (await handleGetNextOptions(body)) as T;
   }
 
+  if (url.pathname === '/api/rooms/create' && method === 'POST') {
+    return (await handleCreateRoom(body)) as T;
+  }
+
   if (url.pathname === '/api/session/start' && method === 'POST') {
     return (await handleStartSession(body)) as T;
   }
@@ -1639,6 +2341,18 @@ const requestLocalJson = async <T,>(path: string, init?: RequestInit): Promise<T
     return (await handleSessionState(decodeURIComponent(stateSessionId))) as T;
   }
 
+  const roomStateMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/state$/);
+  if (roomStateMatch && method === 'GET') {
+    const roomCode = roomStateMatch[1];
+    if (!roomCode) {
+      throw createApiError(404, { error: 'room_not_found' });
+    }
+    return (await handleRoomState(
+      decodeURIComponent(roomCode),
+      url.searchParams.get('playerToken') ?? url.searchParams.get('player_token'),
+    )) as T;
+  }
+
   const moveMatch = url.pathname.match(/^\/api\/session\/([^/]+)\/move$/);
   if (moveMatch && method === 'POST') {
     const moveSessionId = moveMatch[1];
@@ -1646,6 +2360,24 @@ const requestLocalJson = async <T,>(path: string, init?: RequestInit): Promise<T
       throw createApiError(404, { error: 'session_not_found' });
     }
     return (await handleMove(decodeURIComponent(moveSessionId), body)) as T;
+  }
+
+  const roomJoinMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/join$/);
+  if (roomJoinMatch && method === 'POST') {
+    const roomCode = roomJoinMatch[1];
+    if (!roomCode) {
+      throw createApiError(404, { error: 'room_not_found' });
+    }
+    return (await handleJoinRoom(decodeURIComponent(roomCode), body)) as T;
+  }
+
+  const roomMoveMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/move$/);
+  if (roomMoveMatch && method === 'POST') {
+    const roomCode = roomMoveMatch[1];
+    if (!roomCode) {
+      throw createApiError(404, { error: 'room_not_found' });
+    }
+    return (await handleRoomMove(decodeURIComponent(roomCode), body)) as T;
   }
 
   const reviewSuggestionMatch = url.pathname.match(/^\/api\/root-suggestions\/([^/]+)\/review$/);

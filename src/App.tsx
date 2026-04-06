@@ -22,6 +22,7 @@ declare global {
 }
 
 type GameMode = 'journey' | 'survival';
+type PlayMode = GameMode | 'multiplayer';
 type SessionStatus = 'active' | 'game_over' | 'completed';
 type MoveType = 'REPLACE' | 'SWAP';
 type ComboKind = 'permutation' | 'same_position';
@@ -123,6 +124,84 @@ type SessionPayload = {
   move: MoveSummary | null;
 };
 
+type RoomPlayerSnapshot = {
+  id: string;
+  name: string;
+  joinedAtMs: number;
+  score: number;
+  streak: number;
+  longestStreak: number;
+  takeovers: number;
+  combo: {
+    permutationChain: number;
+    samePositionChain: number;
+    samePositionIndex: number | null;
+  };
+  isHost: boolean;
+  isSelf: boolean;
+};
+
+type RoomPlayerAuth = {
+  id: string;
+  name: string;
+  token: string;
+  isHost: boolean;
+  joinedAtMs: number;
+};
+
+type RoomSnapshot = {
+  id: string;
+  code: string;
+  version: number;
+  status: 'active' | 'completed';
+  phase: 'open_claim' | 'controlled';
+  reason: string | null;
+  currentRoot: string;
+  currentRootDotted: string;
+  moveCount: number;
+  visitedRoots: string[];
+  visitedCount: number;
+  controllerPlayerId: string | null;
+  controllerExpiresAtMs: number | null;
+  controllerRemainingMs: number;
+  turnStartedAtMs: number;
+  createdAtMs: number;
+  updatedAtMs: number;
+  startedAtMs: number;
+  allowRevisit: boolean;
+  types: MoveType[];
+  letterBank: string[] | null;
+  config: {
+    countdownMs: number;
+    bonusBaseMs: number;
+    bonusWindowMs: number;
+    controlWindowMs: number;
+    maxControlMs: number;
+    maxPlayers: number;
+  };
+  players: RoomPlayerSnapshot[];
+  options: {
+    root: string;
+    dottedRoot: string;
+    count: number;
+    neighbors: string[];
+    edges: NeighborEdge[];
+  };
+};
+
+type RoomMoveSummary = MoveSummary & {
+  byPlayerId?: string;
+  byPlayerName?: string;
+  controlChange?: 'claimed' | 'extended' | 'released' | 'none';
+  controlRemainingMs?: number;
+};
+
+type RoomPayload = {
+  room: RoomSnapshot;
+  player: RoomPlayerAuth | null;
+  move: RoomMoveSummary | null;
+};
+
 type PathPayload = {
   from: string;
   to: string;
@@ -216,6 +295,8 @@ const DEFAULT_TYPES: MoveType[] = ['REPLACE', 'SWAP'];
 const DEFAULT_COUNTDOWN_MS = 24_000;
 const DEFAULT_BONUS_BASE_MS = 6_000;
 const DEFAULT_BONUS_WINDOW_MS = 8_000;
+const DEFAULT_CONTROL_WINDOW_MS = 8_000;
+const DEFAULT_MAX_CONTROL_MS = 12_000;
 const REEL_DRAG_THRESHOLD_PX = 12;
 const TRANSLITERATION_STORAGE_KEY = 'roots.transliterationPreset.v2';
 const STAGE_BACKGROUND_IMAGE = '/backgrounds/mosaic-overlay.png';
@@ -223,7 +304,7 @@ const SLOT_LABELS = ['Right reel', 'Middle reel', 'Left reel'] as const;
 const HEBREW_CHAR_PATTERN = /[\u0590-\u05FF]/;
 const KEYBOARD_LAYOUT_SAMPLE_CODES = ['KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyJ', 'KeyK', 'KeyL'] as const;
 const STAGE_SLOT_LAYOUT = [
-  { left: 61.5885, top: 24.6094, width: 15.0391, height: 42.9688 },
+  { left: 60.72, top: 24.52, width: 14.72, height: 42.72 },
   { left: 43.75, top: 25.0977, width: 14.8438, height: 42.4805 },
   { left: 25.3906, top: 25.0, width: 14.7786, height: 42.5781 },
 ] as const;
@@ -529,6 +610,46 @@ const pickKeyboardLayoutSample = (layoutMap: KeyboardLayoutMapLike): string | nu
   );
 };
 
+const getKeyboardSwitchGuide = () => {
+  if (typeof navigator === 'undefined') {
+    return {
+      hint: 'Switch your device keyboard to Hebrew',
+    };
+  }
+
+  const userAgentDataPlatform =
+    (
+      navigator as Navigator & {
+        userAgentData?: {
+          platform?: string;
+        };
+      }
+    ).userAgentData?.platform ?? '';
+  const platformFingerprint = `${navigator.platform ?? ''} ${navigator.userAgent ?? ''} ${userAgentDataPlatform}`.toLowerCase();
+
+  if (/iphone|ipad|ipod|ios|android/.test(platformFingerprint)) {
+    return {
+      hint: 'Tap the globe key, then choose Hebrew',
+    };
+  }
+
+  if (/mac/.test(platformFingerprint)) {
+    return {
+      hint: 'Press Control + Space for Hebrew',
+    };
+  }
+
+  if (/win/.test(platformFingerprint)) {
+    return {
+      hint: 'Press Win + Space for Hebrew',
+    };
+  }
+
+  return {
+    hint: 'Use your system shortcut for Hebrew',
+  };
+};
+
 const mapKeyToGameChar = (key: string, preset: TransliterationPreset): string | null =>
   preset.hebToGame[key] ?? normalizeGameChar(key, preset.inputAliases);
 
@@ -541,6 +662,8 @@ const formatReason = (reason: string | null | undefined): string => {
     already_visited: 'Root already used',
     not_a_valid_neighbor: 'Not a valid neighbor',
     same_root: 'Root did not change',
+    control_locked: 'Another player still controls the board',
+    room_not_active: 'Room is not active',
   };
 
   return map[reason] || reason.replaceAll('_', ' ');
@@ -556,8 +679,10 @@ const getBonusWindowMs = (session: SessionSnapshot | null, fallback = DEFAULT_BO
   session?.config?.bonusWindowMs ?? fallback;
 
 export default function App() {
-  const [mode, setMode] = useState<GameMode>('survival');
+  const [mode, setMode] = useState<PlayMode>('survival');
   const [session, setSession] = useState<SessionSnapshot | null>(null);
+  const [room, setRoom] = useState<RoomSnapshot | null>(null);
+  const [roomPlayer, setRoomPlayer] = useState<RoomPlayerAuth | null>(null);
   const [neighborsSet, setNeighborsSet] = useState<Set<string>>(new Set());
   const [neighborEdges, setNeighborEdges] = useState<NeighborEdge[]>([]);
   const [letters, setLetters] = useState<string[]>(['', '', '']);
@@ -570,12 +695,17 @@ export default function App() {
 
   const [startRootInput, setStartRootInput] = useState('');
   const [targetRootInput, setTargetRootInput] = useState('');
+  const [roomCodeInput, setRoomCodeInput] = useState('');
+  const [roomPlayerNameInput, setRoomPlayerNameInput] = useState('');
   const [countdownMs, setCountdownMs] = useState(DEFAULT_COUNTDOWN_MS);
   const [bonusBaseMs, setBonusBaseMs] = useState(DEFAULT_BONUS_BASE_MS);
   const [bonusWindowMs, setBonusWindowMs] = useState(DEFAULT_BONUS_WINDOW_MS);
+  const [controlWindowMs, setControlWindowMs] = useState(DEFAULT_CONTROL_WINDOW_MS);
+  const [maxControlMs, setMaxControlMs] = useState(DEFAULT_MAX_CONTROL_MS);
 
   const [serverHealthy, setServerHealthy] = useState<boolean | null>(null);
   const [loadingSession, setLoadingSession] = useState(false);
+  const [loadingRoom, setLoadingRoom] = useState(false);
   const [submittingMove, setSubmittingMove] = useState(false);
 
   const [errorText, setErrorText] = useState('');
@@ -610,6 +740,7 @@ export default function App() {
   const [syncClientMs, setSyncClientMs] = useState(Date.now());
 
   const sessionIdRef = useRef<string | null>(null);
+  const roomCodeRef = useRef<string | null>(null);
   const typingInputRef = useRef<HTMLInputElement | null>(null);
   const suggestRootInputRef = useRef<HTMLInputElement | null>(null);
   const dragGestureRef = useRef<DragGestureState | null>(null);
@@ -618,7 +749,69 @@ export default function App() {
   const attemptTimersRef = useRef<number[]>([]);
   const motionTimersRef = useRef<number[]>([]);
 
-  const committedPlain = session?.currentRoot || letters.join('');
+  const activeRoomPlayer = useMemo(
+    () =>
+      roomPlayer
+        ? room?.players.find((candidate) => candidate.id === roomPlayer.id) ?? null
+        : room?.players.find((candidate) => candidate.isSelf) ?? null,
+    [room, roomPlayer],
+  );
+  const activeController = useMemo(
+    () =>
+      room?.controllerPlayerId
+        ? room.players.find((candidate) => candidate.id === room.controllerPlayerId) ?? null
+        : null,
+    [room],
+  );
+  const activeSession = useMemo<SessionSnapshot | null>(() => {
+    if (room) {
+      return {
+        id: room.id,
+        mode: 'survival',
+        status: room.status === 'active' ? 'active' : 'completed',
+        reason: room.reason,
+        currentRoot: room.currentRoot,
+        targetRoot: null,
+        score: activeRoomPlayer?.score ?? 0,
+        streak: activeRoomPlayer?.streak ?? 0,
+        moveCount: room.moveCount,
+        combo: activeRoomPlayer?.combo ?? {
+          permutationChain: 0,
+          samePositionChain: 0,
+          samePositionIndex: null,
+        },
+        visitedRoots: room.visitedRoots,
+        visitedCount: room.visitedCount,
+        allowRevisit: room.allowRevisit,
+        types: room.types,
+        letterBank: room.letterBank,
+        turnBudgetMs: room.config.controlWindowMs,
+        remainingMs: room.controllerPlayerId ? room.controllerRemainingMs : room.config.controlWindowMs,
+        turnStartedAtMs: room.turnStartedAtMs,
+        turnEndsAtMs:
+          room.controllerExpiresAtMs ?? room.turnStartedAtMs + room.config.controlWindowMs,
+        createdAtMs: room.createdAtMs,
+        updatedAtMs: room.updatedAtMs,
+        endedAtMs: room.status === 'completed' ? room.updatedAtMs : null,
+        config: {
+          countdownMs: room.config.controlWindowMs,
+          bonusBaseMs: room.config.bonusBaseMs,
+          bonusWindowMs: room.config.bonusWindowMs,
+        },
+      };
+    }
+
+    return session;
+  }, [activeRoomPlayer, room, session]);
+  const roomControllerName = activeController?.name ?? 'Nobody';
+  const roomIsControlledBySelf = Boolean(room && roomPlayer && room.controllerPlayerId === roomPlayer.id);
+  const roomRoster = room?.players ?? [];
+  const canInteractWithBoard = Boolean(
+    activeSession &&
+      activeSession.status === 'active' &&
+      (!room || room.phase === 'open_claim' || roomIsControlledBySelf),
+  );
+  const committedPlain = activeSession?.currentRoot || letters.join('');
   const activeTransliteration = useMemo(
     () => TRANSLITERATION_PRESETS[transliterationPresetId],
     [transliterationPresetId],
@@ -638,30 +831,33 @@ export default function App() {
 
   const virtualNowMs = clockMs + timeOffsetMs;
   const remainingMs = useMemo(() => {
-    if (!session) return 0;
+    if (!activeSession) return 0;
     const elapsed = virtualNowMs - syncClientMs;
-    return Math.max(0, session.remainingMs - elapsed);
-  }, [session, virtualNowMs, syncClientMs]);
+    return Math.max(0, activeSession.remainingMs - elapsed);
+  }, [activeSession, virtualNowMs, syncClientMs]);
 
-  const timerLimitMs = useMemo(() => Math.max(getCountdownMs(session), session?.remainingMs ?? 0), [session]);
+  const timerLimitMs = useMemo(
+    () => Math.max(getCountdownMs(activeSession), activeSession?.remainingMs ?? 0),
+    [activeSession],
+  );
   const timerPct = useMemo(() => {
-    if (!session) return 0;
+    if (!activeSession) return 0;
     const ratio = remainingMs / Math.max(timerLimitMs, 1);
     return Math.max(0, Math.min(100, ratio * 100));
-  }, [remainingMs, session, timerLimitMs]);
+  }, [activeSession, remainingMs, timerLimitMs]);
 
   const neighborHints = useMemo(() => neighborEdges.slice(0, 12), [neighborEdges]);
   const visibleVisitedRoots = useMemo(() => {
     const roots =
-      session?.visitedRoots && session.visitedRoots.length > 0
-        ? session.visitedRoots
+      activeSession?.visitedRoots && activeSession.visitedRoots.length > 0
+        ? activeSession.visitedRoots
         : visitedRoots.length > 0
           ? visitedRoots
           : committedPlain
             ? [committedPlain]
             : [];
     return roots;
-  }, [committedPlain, session?.visitedRoots, visitedRoots]);
+  }, [activeSession?.visitedRoots, committedPlain, visitedRoots]);
   const journeyStartRoot = session?.visitedRoots?.[0] ?? session?.currentRoot ?? null;
   const journeySolutionRequest = useMemo(() => {
     if (
@@ -681,27 +877,27 @@ export default function App() {
       types: session.types,
     };
   }, [journeyStartRoot, session]);
-  const displayCountdownMs = session ? getCountdownMs(session, countdownMs) : countdownMs;
+  const displayCountdownMs = activeSession ? getCountdownMs(activeSession, countdownMs) : countdownMs;
   const selectedSlotLabel = getSlotLabel(selectedIdx);
   const selectedSlotCenter = selectedIdx !== null ? getStageSlotCenter(selectedIdx) : null;
   const activeComboKind: ComboKind | null =
-    session?.combo?.permutationChain && session.combo.permutationChain >= 2
+    activeSession?.combo?.permutationChain && activeSession.combo.permutationChain >= 2
       ? 'permutation'
-      : session?.combo?.samePositionChain && session.combo.samePositionChain >= 2
+      : activeSession?.combo?.samePositionChain && activeSession.combo.samePositionChain >= 2
         ? 'same_position'
         : null;
   const activeComboDescriptor = useMemo(
     () =>
       getComboDescriptor(
         activeComboKind,
-        session?.combo?.permutationChain && session.combo.permutationChain >= 2
-          ? session.combo.permutationChain
-          : session?.combo?.samePositionChain ?? 0,
-        session?.combo?.samePositionIndex,
+        activeSession?.combo?.permutationChain && activeSession.combo.permutationChain >= 2
+          ? activeSession.combo.permutationChain
+          : activeSession?.combo?.samePositionChain ?? 0,
+        activeSession?.combo?.samePositionIndex,
       ),
-    [activeComboKind, session],
+    [activeComboKind, activeSession],
   );
-  const currentSuccessStreak = session?.streak ?? 0;
+  const currentSuccessStreak = activeSession?.streak ?? 0;
   const streakTier = useMemo(() => getStreakTier(currentSuccessStreak), [currentSuccessStreak]);
   const nextStreakTier = useMemo(() => getNextStreakTier(currentSuccessStreak), [currentSuccessStreak]);
   const streakTierProgress = useMemo(
@@ -732,20 +928,37 @@ export default function App() {
 
     return null;
   }, [attemptFlash, attemptFlashVisible, bonusFlash, bonusFlashVisible]);
+  const keyboardSwitchGuide = useMemo(() => getKeyboardSwitchGuide(), []);
   const keyboardIndicatorLabel =
     keyboardLayout.mode === 'hebrew' ? 'עברית' : keyboardLayout.mode === 'latin' ? 'ABC' : 'Detect';
+  const keyboardIndicatorStatusLabel =
+    keyboardLayout.mode === 'hebrew'
+      ? 'Hebrew Ready'
+      : keyboardLayout.mode === 'latin'
+        ? 'Switch to Hebrew'
+        : 'Check Keyboard';
   const keyboardIndicatorHint =
     keyboardLayout.mode === 'hebrew'
       ? 'Hebrew keyboard ready'
-      : keyboardLayout.mode === 'latin'
-        ? 'Switch keyboard to Hebrew'
-        : 'Tap a key to confirm';
+      : keyboardSwitchGuide.hint;
   const keyboardIndicatorToneClass =
     keyboardLayout.mode === 'hebrew'
       ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
       : keyboardLayout.mode === 'latin'
         ? 'border-rose-200 bg-rose-50 text-rose-700'
         : 'border-slate-200 bg-white text-slate-600';
+  const keyboardIndicatorShellClass =
+    keyboardLayout.mode === 'hebrew'
+      ? 'border-emerald-200/90 bg-[linear-gradient(135deg,rgba(240,253,244,0.96)_0%,rgba(220,252,231,0.94)_100%)] text-emerald-900 shadow-[0_18px_36px_-28px_rgba(22,163,74,0.5)]'
+      : keyboardLayout.mode === 'latin'
+        ? 'border-rose-300/95 bg-[linear-gradient(135deg,rgba(255,241,242,0.98)_0%,rgba(255,237,213,0.96)_100%)] text-rose-900 shadow-[0_22px_46px_-26px_rgba(225,29,72,0.52)] motion-safe:animate-[pulse_2.2s_ease-in-out_infinite]'
+        : 'border-amber-200/90 bg-[linear-gradient(135deg,rgba(255,251,235,0.98)_0%,rgba(254,243,199,0.95)_100%)] text-amber-950 shadow-[0_18px_36px_-28px_rgba(217,119,6,0.4)]';
+  const keyboardIndicatorDotClass =
+    keyboardLayout.mode === 'hebrew'
+      ? 'bg-emerald-500 shadow-[0_0_0_6px_rgba(16,185,129,0.18)]'
+      : keyboardLayout.mode === 'latin'
+        ? 'bg-rose-500 shadow-[0_0_0_7px_rgba(244,63,94,0.2)]'
+        : 'bg-amber-500 shadow-[0_0_0_6px_rgba(245,158,11,0.18)]';
   const keyboardIndicatorDir = keyboardLayout.mode === 'hebrew' ? 'rtl' : 'ltr';
   const pendingSuggestionsCount = rootSuggestions.filter(
     (suggestion) => suggestion.status === 'pending',
@@ -927,6 +1140,62 @@ export default function App() {
     }
   }, [clearSelection]);
 
+  const applyRoomPayload = useCallback((
+    payload: RoomPayload,
+    options: {
+      syncLetters: boolean;
+      preserveSelection?: boolean;
+    },
+  ) => {
+    setRoom(payload.room);
+    setRoomPlayer(payload.player);
+    roomCodeRef.current = payload.room.code;
+    setNeighborEdges(payload.room.options.edges);
+    setNeighborsSet(new Set(payload.room.options.neighbors));
+    setSyncClientMs(Date.now());
+    setLastMove(payload.move ?? null);
+
+    const shouldPreserveSelection = Boolean(options.preserveSelection) && payload.room.status === 'active';
+
+    if (options.syncLetters) {
+      setLetters(payload.room.currentRoot.split(''));
+
+      if (!shouldPreserveSelection) {
+        clearSelection();
+      }
+    }
+
+    if (payload.room.status !== 'active') {
+      clearSelection();
+    }
+  }, [clearSelection]);
+
+  const resetGameplayUi = useCallback(() => {
+    resetApiTime();
+    setErrorText('');
+    setInfoText('');
+    setLastMove(null);
+    setBonusFlash(null);
+    setBonusFlashVisible(false);
+    setAttemptFlash(null);
+    setAttemptFlashVisible(false);
+    setReelFx(null);
+    setTimerBurstActive(false);
+    setJourneySolution(null);
+    setLoadingJourneySolution(false);
+    setJourneySolutionError('');
+    clearFlashTimers();
+    clearAttemptTimers();
+    clearMotionTimers();
+    setTimeOffsetMs(0);
+    clearSelection();
+  }, [
+    clearAttemptTimers,
+    clearFlashTimers,
+    clearMotionTimers,
+    clearSelection,
+  ]);
+
   const checkBackendHealth = useCallback(async () => {
     try {
       await requestJson<{ ok: boolean }>('/health');
@@ -1022,28 +1291,14 @@ export default function App() {
   );
 
   const startSession = useCallback(async () => {
-    resetApiTime();
     setLoadingSession(true);
-    setErrorText('');
-    setInfoText('');
-    setLastMove(null);
-    setBonusFlash(null);
-    setBonusFlashVisible(false);
-    setAttemptFlash(null);
-    setAttemptFlashVisible(false);
-    setReelFx(null);
-    setTimerBurstActive(false);
-    setJourneySolution(null);
-    setLoadingJourneySolution(false);
-    setJourneySolutionError('');
-    clearFlashTimers();
-    clearAttemptTimers();
-    clearMotionTimers();
-    setTimeOffsetMs(0);
-    clearSelection();
+    resetGameplayUi();
+    setRoom(null);
+    setRoomPlayer(null);
+    roomCodeRef.current = null;
 
     const body: Record<string, unknown> = {
-      mode,
+      mode: mode === 'journey' ? 'journey' : 'survival',
       types: DEFAULT_TYPES,
       allowRevisit: false,
       optionsLimit: 700,
@@ -1090,13 +1345,119 @@ export default function App() {
     bonusBaseMs,
     bonusWindowMs,
     countdownMs,
-    clearSelection,
-    clearAttemptTimers,
-    clearFlashTimers,
-    clearMotionTimers,
     mode,
+    resetGameplayUi,
     startRootInput,
     targetRootInput,
+  ]);
+
+  const createRoom = useCallback(async () => {
+    setLoadingRoom(true);
+    resetGameplayUi();
+    setSession(null);
+    sessionIdRef.current = null;
+
+    const body: Record<string, unknown> = {
+      playerName: roomPlayerNameInput.trim() || 'Host',
+      types: DEFAULT_TYPES,
+      allowRevisit: false,
+      optionsLimit: 700,
+      countdownMs,
+      bonusBaseMs,
+      bonusWindowMs,
+      controlWindowMs,
+      maxControlMs,
+      maxPlayers: 4,
+    };
+
+    const cleanedStart = startRootInput.trim();
+    if (cleanedStart) body.startRoot = cleanedStart;
+
+    try {
+      const payload = await requestJson<RoomPayload>('/api/rooms/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      applyRoomPayload(payload, { syncLetters: true });
+      setVisitedRoots([payload.room.currentRoot]);
+      setRoomCodeInput(payload.room.code);
+      setServerHealthy(true);
+      setInfoText(
+        `Room ${payload.room.code} live. First valid root claims control, then streaks extend the timer.`,
+      );
+    } catch (error: unknown) {
+      if (isApiError(error)) {
+        setErrorText(error.message);
+      } else {
+        setErrorText('Failed to create room');
+      }
+    } finally {
+      setLoadingRoom(false);
+    }
+  }, [
+    applyRoomPayload,
+    bonusBaseMs,
+    bonusWindowMs,
+    controlWindowMs,
+    countdownMs,
+    maxControlMs,
+    resetGameplayUi,
+    roomPlayerNameInput,
+    startRootInput,
+  ]);
+
+  const joinRoom = useCallback(async () => {
+    const trimmedRoomCode = roomCodeInput.trim();
+    if (!trimmedRoomCode) {
+      setErrorText('Enter a room code');
+      return;
+    }
+
+    setLoadingRoom(true);
+    resetGameplayUi();
+    setSession(null);
+    sessionIdRef.current = null;
+
+    try {
+      const payload = await requestJson<RoomPayload>(
+        `/api/rooms/${encodeURIComponent(trimmedRoomCode)}/join`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            playerName: roomPlayerNameInput.trim() || 'Player',
+            playerToken: room?.code === trimmedRoomCode ? roomPlayer?.token : undefined,
+          }),
+        },
+      );
+
+      applyRoomPayload(payload, { syncLetters: true });
+      setVisitedRoots([payload.room.currentRoot]);
+      setRoomCodeInput(payload.room.code);
+      setServerHealthy(true);
+      setInfoText(
+        payload.room.phase === 'open_claim'
+          ? `Joined room ${payload.room.code}. The board is open.`
+          : `Joined room ${payload.room.code}. ${payload.room.players.find((candidate) => candidate.id === payload.room.controllerPlayerId)?.name ?? 'Another player'} currently controls the board.`,
+      );
+    } catch (error: unknown) {
+      if (isApiError(error)) {
+        setErrorText(error.message);
+      } else {
+        setErrorText('Failed to join room');
+      }
+    } finally {
+      setLoadingRoom(false);
+    }
+  }, [
+    applyRoomPayload,
+    resetGameplayUi,
+    room?.code,
+    roomCodeInput,
+    roomPlayer?.token,
+    roomPlayerNameInput,
   ]);
 
   const refreshSessionState = useCallback(
@@ -1116,7 +1477,32 @@ export default function App() {
     [applyPayload],
   );
 
-  const submitMove = useCallback(
+  const refreshRoomState = useCallback(
+    async (syncLetters: boolean) => {
+      const roomCode = roomCodeRef.current;
+      const playerToken = roomPlayer?.token;
+      if (!roomCode || !playerToken) return;
+
+      try {
+        const payload = await requestJson<RoomPayload>(
+          `/api/rooms/${encodeURIComponent(roomCode)}/state?playerToken=${encodeURIComponent(playerToken)}`,
+        );
+        applyRoomPayload(payload, {
+          syncLetters:
+            syncLetters ||
+            payload.room.currentRoot !== room?.currentRoot ||
+            !canInteractWithBoard,
+        });
+      } catch (error: unknown) {
+        if (isApiError(error)) {
+          setErrorText(error.message);
+        }
+      }
+    },
+    [applyRoomPayload, canInteractWithBoard, room?.currentRoot, roomPlayer?.token],
+  );
+
+  const submitSessionMove = useCallback(
     async (nextRoot: string) => {
       const sessionId = sessionIdRef.current;
       if (!sessionId) return;
@@ -1274,6 +1660,182 @@ export default function App() {
     ],
   );
 
+  const submitRoomMove = useCallback(
+    async (nextRoot: string) => {
+      const currentRoomCode = roomCodeRef.current;
+      const playerToken = roomPlayer?.token;
+      if (!currentRoomCode || !playerToken) return;
+      const streakBeforeMove = activeRoomPlayer?.streak ?? 0;
+
+      setSubmittingMove(true);
+      setErrorText('');
+
+      try {
+        const payload = await requestJson<RoomPayload>(
+          `/api/rooms/${encodeURIComponent(currentRoomCode)}/move`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ root: nextRoot, playerToken }),
+          },
+        );
+
+        applyRoomPayload(payload, {
+          syncLetters: true,
+          preserveSelection: selectedIdx !== null,
+        });
+
+        if (payload.room.status === 'active' && selectedIdx !== null && dragSourceIdx === null) {
+          focusTypingInput();
+        }
+
+        if (payload.move?.ok) {
+          const bonusMs = payload.move.bonusMs ?? 0;
+          const multiplier = payload.move.bonusMultiplier ?? 1;
+          const elapsedMs = payload.move.elapsedMs ?? 0;
+          const scoreGain = payload.move.scoreGain ?? 0;
+          const chainBonusScore = payload.move.chainBonusScore ?? 0;
+          const streakBonusScore = payload.move.streakBonusScore ?? 0;
+          const streakBonusMs = payload.move.streakBonusMs ?? 0;
+          const comboBonusMs = payload.move.comboBonusMs ?? 0;
+          const streakAfterMove = payload.move.streakAfterMove ?? activeRoomPlayer?.streak ?? 0;
+          const comboDescriptor = getComboDescriptor(
+            payload.move.activeCombo,
+            payload.move.comboCount,
+            payload.move.samePositionIndex,
+          );
+          const comboSlots =
+            comboDescriptor && payload.move.edge
+              ? payload.move.edge.type === 'SWAP'
+                ? [payload.move.edge.positionA, payload.move.edge.positionB]
+                : [payload.move.edge.positionA]
+              : [];
+          const moveLabel =
+            payload.move.controlChange === 'claimed'
+              ? 'Control claimed'
+              : payload.move.edge?.type === 'SWAP'
+                ? 'Swap jackpot'
+                : 'Control extended';
+
+          clearAttemptTimers();
+          setAttemptFlash(null);
+          setAttemptFlashVisible(false);
+          setVisitedRoots((prev) =>
+            prev[prev.length - 1] === payload.room.currentRoot ? prev : [...prev, payload.room.currentRoot],
+          );
+          triggerValidMotion();
+          setInfoText(
+            `${moveLabel}. +${scoreGain} score${comboDescriptor ? ` · ${comboDescriptor.detail}` : ''} · ${formatSeconds(payload.move.controlRemainingMs ?? 0)} control left.`,
+          );
+          showBonusFlash({
+            bonusMs,
+            multiplier,
+            elapsedMs,
+            scoreGain,
+            moveType: payload.move.edge?.type ?? null,
+            comboLabel: comboDescriptor?.label ?? null,
+            comboCount: payload.move.comboCount ?? 0,
+            chainBonusScore,
+            streakBonusScore,
+            streakBonusMs,
+            comboBonusMs,
+            streakAfterMove,
+            comboSlots,
+          });
+        }
+      } catch (error: unknown) {
+        if (isApiError(error)) {
+          if (
+            typeof error.data === 'object' &&
+            error.data !== null &&
+            'room' in error.data
+          ) {
+            const payload = error.data as RoomPayload;
+            applyRoomPayload(payload, { syncLetters: false });
+
+            if (payload.move?.reason === 'control_locked') {
+              setLetters(payload.room.currentRoot.split(''));
+              clearFlashTimers();
+              setBonusFlash(null);
+              setBonusFlashVisible(false);
+              setAttemptFlash(null);
+              setAttemptFlashVisible(false);
+              setInfoText(
+                `${payload.room.players.find((candidate) => candidate.id === payload.room.controllerPlayerId)?.name ?? 'Another player'} controls the board for ${formatSeconds(payload.move.controlRemainingMs ?? payload.room.controllerRemainingMs)}.`,
+              );
+              setErrorText('');
+              return;
+            }
+
+            if (
+              payload.move?.reason === 'not_a_valid_neighbor' ||
+              payload.move?.reason === 'already_visited' ||
+              payload.move?.reason === 'same_root'
+            ) {
+              const streakTierBeforeReset =
+                streakBeforeMove > 0 ? getStreakTier(streakBeforeMove) : null;
+              setLetters(payload.room.currentRoot.split(''));
+              setInfoText('');
+              setErrorText('');
+              clearFlashTimers();
+              setBonusFlash(null);
+              setBonusFlashVisible(false);
+              triggerRejectedMotion();
+              showAttemptFlash({
+                tone: payload.move.reason === 'already_visited' ? 'repeat' : 'invalid',
+                message:
+                  payload.move.reason === 'already_visited'
+                    ? 'Already used in this room'
+                    : payload.move.reason === 'same_root'
+                      ? 'Root did not change'
+                      : 'Invalid root',
+                root: nextRoot,
+                streakResetFrom: streakBeforeMove,
+                streakTierLabel: streakTierBeforeReset?.label ?? null,
+              });
+              if (dragSourceIdx === null && selectedIdx !== null) {
+                focusTypingInput();
+              }
+              return;
+            }
+          }
+
+          setErrorText(error.message);
+        } else {
+          setErrorText('Failed to submit room move');
+        }
+      } finally {
+        setSubmittingMove(false);
+      }
+    },
+    [
+      activeRoomPlayer?.streak,
+      applyRoomPayload,
+      clearAttemptTimers,
+      clearFlashTimers,
+      dragSourceIdx,
+      focusTypingInput,
+      roomPlayer?.token,
+      selectedIdx,
+      showAttemptFlash,
+      showBonusFlash,
+      triggerRejectedMotion,
+      triggerValidMotion,
+    ],
+  );
+
+  const submitMove = useCallback(
+    async (nextRoot: string) => {
+      if (room) {
+        await submitRoomMove(nextRoot);
+        return;
+      }
+
+      await submitSessionMove(nextRoot);
+    },
+    [room, submitRoomMove, submitSessionMove],
+  );
+
   const selectSlot = useCallback(
     (index: number) => {
       clearDragState();
@@ -1302,7 +1864,7 @@ export default function App() {
         return;
       }
 
-      if (!session || session.status !== 'active') return;
+      if (!canInteractWithBoard) return;
 
       clearDragState();
 
@@ -1313,12 +1875,12 @@ export default function App() {
 
       selectSlot(index);
     },
-    [clearDragState, clearSelection, selectSlot, selectedIdx, session],
+    [canInteractWithBoard, clearDragState, clearSelection, selectSlot, selectedIdx],
   );
 
   const handleCardPointerDown = useCallback(
     (index: number, event: ReactPointerEvent<HTMLButtonElement>) => {
-      if (!session || session.status !== 'active') return;
+      if (!canInteractWithBoard) return;
       if (event.pointerType === 'mouse' && event.button !== 0) return;
 
       try {
@@ -1337,7 +1899,7 @@ export default function App() {
       setDragSourceIdx(null);
       setDragOverIdx(null);
     },
-    [session],
+    [canInteractWithBoard],
   );
 
   const handleCardPointerMove = useCallback(
@@ -1428,7 +1990,7 @@ export default function App() {
 
   const handleStagePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (!session || session.status !== 'active' || (selectedIdx === null && dragSourceIdx === null)) {
+      if (!canInteractWithBoard || (selectedIdx === null && dragSourceIdx === null)) {
         return;
       }
 
@@ -1438,12 +2000,12 @@ export default function App() {
 
       clearSelection();
     },
-    [clearSelection, dragSourceIdx, selectedIdx, session],
+    [canInteractWithBoard, clearSelection, dragSourceIdx, selectedIdx],
   );
 
   const applyTypedCharacter = useCallback(
     (rawValue: string) => {
-      if (!session || session.status !== 'active' || selectedIdx === null) return;
+      if (!canInteractWithBoard || !activeSession || selectedIdx === null) return;
       const nextKey = Array.from(rawValue).at(-1);
       if (!nextKey) return;
 
@@ -1457,7 +2019,7 @@ export default function App() {
         return next;
       });
     },
-    [activeTransliteration, clearDragState, selectedIdx, session],
+    [activeSession, activeTransliteration, canInteractWithBoard, clearDragState, selectedIdx],
   );
 
   useEffect(() => {
@@ -1519,6 +2081,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (room) return;
     if (!session || session.status !== 'active') return;
 
     const intervalId = window.setInterval(() => {
@@ -1526,7 +2089,17 @@ export default function App() {
     }, 2200);
 
     return () => window.clearInterval(intervalId);
-  }, [refreshSessionState, session]);
+  }, [refreshSessionState, room, session]);
+
+  useEffect(() => {
+    if (!room || room.status !== 'active') return;
+
+    const intervalId = window.setInterval(() => {
+      void refreshRoomState(false);
+    }, 900);
+
+    return () => window.clearInterval(intervalId);
+  }, [refreshRoomState, room]);
 
   useEffect(() => {
     if (!journeySolutionRequest) {
@@ -1575,13 +2148,13 @@ export default function App() {
   }, [journeySolutionRequest]);
 
   useEffect(() => {
-    if (!session || session.status !== 'active') return;
+    if (!canInteractWithBoard || !activeSession) return;
     if (submittingMove) return;
-    if (candidatePlain === session.currentRoot) return;
+    if (candidatePlain === activeSession.currentRoot) return;
     if (letters.some((letter) => letter.length !== 1)) return;
 
     void submitMove(candidatePlain);
-  }, [candidatePlain, letters, session, submitMove, submittingMove]);
+  }, [activeSession, candidatePlain, canInteractWithBoard, letters, submitMove, submittingMove]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1595,7 +2168,7 @@ export default function App() {
         return;
       }
 
-      if (!session || session.status !== 'active') return;
+      if (!canInteractWithBoard || !activeSession) return;
 
       if (event.key === '1' || event.key === '2' || event.key === '3') {
         event.preventDefault();
@@ -1628,7 +2201,7 @@ export default function App() {
         clearDragState();
         setLetters((prev) => {
           const next = [...prev];
-          next[selectedIdx] = session.currentRoot[selectedIdx] ?? next[selectedIdx];
+          next[selectedIdx] = activeSession.currentRoot[selectedIdx] ?? next[selectedIdx];
           return next;
         });
         focusTypingInput();
@@ -1638,13 +2211,14 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
+    activeSession,
     activeTransliteration,
     clearSelection,
     clearDragState,
+    canInteractWithBoard,
     focusTypingInput,
     selectSlot,
     selectedIdx,
-    session,
     updateKeyboardLayoutFromSample,
   ]);
 
@@ -1686,16 +2260,35 @@ export default function App() {
     window.render_game_to_text = () =>
       JSON.stringify({
         mode,
+        room: room
+          ? {
+              code: room.code,
+              phase: room.phase,
+              controllerPlayerId: room.controllerPlayerId,
+              controllerName: activeController?.name ?? null,
+              controllerRemainingMs: room.controllerRemainingMs,
+              selfPlayerId: roomPlayer?.id ?? null,
+              selfPlayerName: activeRoomPlayer?.name ?? null,
+              roster: room.players.map((player) => ({
+                id: player.id,
+                name: player.name,
+                score: player.score,
+                streak: player.streak,
+                takeovers: player.takeovers,
+                isSelf: player.isSelf,
+              })),
+            }
+          : null,
         backendHealthy: serverHealthy,
         coordinateSystem: 'three letter slots indexed right-to-left 0..2, where slot 0 is the rightmost card',
-        session: session
+        session: activeSession
           ? {
-              id: session.id,
-              status: session.status,
-              currentRoot: session.currentRoot,
-              targetRoot: session.targetRoot,
-              score: session.score,
-              streak: session.streak,
+              id: activeSession.id,
+              status: activeSession.status,
+              currentRoot: activeSession.currentRoot,
+              targetRoot: activeSession.targetRoot,
+              score: activeSession.score,
+              streak: activeSession.streak,
               streakTier: {
                 label: streakTier.label,
                 range: formatStreakTierRange(streakTier),
@@ -1711,15 +2304,15 @@ export default function App() {
                   : null,
                 progressPct: Math.round(streakTierProgress * 100),
               },
-              moveCount: session.moveCount,
-              visitedCount: session.visitedCount,
-              visitedRoots: session.visitedRoots ?? null,
-              combo: session.combo ?? null,
+              moveCount: activeSession.moveCount,
+              visitedCount: activeSession.visitedCount,
+              visitedRoots: activeSession.visitedRoots ?? null,
+              combo: activeSession.combo ?? null,
               remainingMs: Math.round(remainingMs),
               config: {
-                countdownMs: getCountdownMs(session),
-                bonusBaseMs: getBonusBaseMs(session),
-                bonusWindowMs: getBonusWindowMs(session),
+                countdownMs: getCountdownMs(activeSession),
+                bonusBaseMs: getBonusBaseMs(activeSession),
+                bonusWindowMs: getBonusWindowMs(activeSession),
               },
             }
           : null,
@@ -1747,7 +2340,7 @@ export default function App() {
               toRoot: journeySolutionRequest.toRoot,
               distance: journeySolution?.distance ?? null,
               path: journeySolution?.path ?? null,
-              stoppedAtRoot: session?.currentRoot ?? null,
+              stoppedAtRoot: activeSession?.currentRoot ?? null,
             }
           : null,
         ui: {
@@ -1763,6 +2356,7 @@ export default function App() {
             sample: keyboardLayout.sample,
             expected: 'hebrew',
           },
+          keyboardSwitchHint: keyboardSwitchGuide.hint,
           loadingSession,
           submittingMove,
           infoText: infoText || null,
@@ -1793,6 +2387,10 @@ export default function App() {
     loadingSession,
     mode,
     neighborsSet,
+    room,
+    roomPlayer?.id,
+    activeController?.name,
+    activeRoomPlayer?.name,
     pendingSuggestionsCount,
     remainingMs,
     reelFx,
@@ -1803,7 +2401,7 @@ export default function App() {
     dragSourceIdx,
     selectedIdx,
     selectedSlotLabel,
-    session,
+    activeSession,
     streakTier,
     nextStreakTier,
     streakTierProgress,
@@ -1817,43 +2415,52 @@ export default function App() {
     keyboardLayout.mode,
     keyboardLayout.sample,
     keyboardLayout.source,
+    keyboardSwitchGuide.hint,
     timerBurstActive,
     activeTransliteration.id,
     visibleVisitedRoots,
   ]);
 
-  const scoreValue = session?.score ?? 0;
-  const streakValue = session?.streak ?? 0;
-  const moveCountValue = session?.moveCount ?? 0;
-  const visitedCountValue = session?.visitedCount ?? 0;
-  const runStatus = session?.status ?? 'idle';
+  const scoreValue = activeSession?.score ?? 0;
+  const streakValue = activeSession?.streak ?? 0;
+  const moveCountValue = activeSession?.moveCount ?? 0;
+  const visitedCountValue = activeSession?.visitedCount ?? 0;
+  const runStatus = activeSession?.status ?? 'idle';
   const isActive = runStatus === 'active';
-  const displayRemainingMs = session ? remainingMs : countdownMs;
-  const displayTimerPct = session ? timerPct : 100;
+  const displayRemainingMs = activeSession ? remainingMs : mode === 'multiplayer' ? controlWindowMs : countdownMs;
+  const displayTimerPct = activeSession ? timerPct : 100;
   const timerToneClass =
     displayRemainingMs > displayCountdownMs * 0.55
       ? 'bg-emerald-400'
       : displayRemainingMs > displayCountdownMs * 0.25
         ? 'bg-amber-400'
         : 'bg-rose-400';
-  const sessionStateLabel = !session
-    ? 'Waiting to start'
-    : session.status === 'completed'
+  const sessionStateLabel = !activeSession
+    ? mode === 'multiplayer'
+      ? 'Waiting for room'
+      : 'Waiting to start'
+    : activeSession.status === 'completed'
       ? 'Run complete'
-      : session.status === 'game_over'
+      : activeSession.status === 'game_over'
         ? 'Game over'
         : 'Live';
-  const helperText = !session
-    ? 'Set the timer and start a run.'
+  const helperText = !activeSession
+    ? mode === 'multiplayer'
+      ? 'Create a room or join one with a code.'
+      : 'Set the timer and start a run.'
     : !isActive
-      ? formatReason(session.reason) || 'Run finished.'
+      ? formatReason(activeSession.reason) || (mode === 'multiplayer' ? 'Room finished.' : 'Run finished.')
+      : mode === 'multiplayer' && room && room.controllerPlayerId && room.controllerPlayerId !== roomPlayer?.id
+        ? `${activeController?.name ?? 'Another player'} is in control. Wait for the window to expire or for a room update.`
+        : mode === 'multiplayer' && room?.phase === 'open_claim'
+          ? 'Board is open. First valid root claims control.'
       : selectedIdx === null
         ? 'Tap any reel to focus it, type on a Hebrew keyboard, or drag one reel onto another to swap.'
         : dragSourceIdx === selectedIdx
           ? `${selectedSlotLabel} is moving. Drop it on another reel to swap, or release to keep editing this reel.`
-        : `${selectedSlotLabel} selected. Type a Hebrew letter, drag any reel onto another to swap, or tap the same reel or outside the board to clear.`;
+          : `${selectedSlotLabel} selected. Type a Hebrew letter, drag any reel onto another to swap, or tap the same reel or outside the board to clear.`;
   const showSetupOverlay = !isActive;
-  const showSummary = Boolean(session && !isActive);
+  const showSummary = Boolean(activeSession && !isActive);
   const showJourneyFailureSolution = Boolean(showSummary && journeySolutionRequest);
   const activeComboBurst =
     bonusFlash && bonusFlashVisible && bonusFlash.comboLabel && bonusFlash.comboCount >= 2
@@ -1939,6 +2546,7 @@ export default function App() {
       </button>
 
       <input
+        id="typing-input"
         ref={typingInputRef}
         type="text"
         inputMode="text"
@@ -1962,7 +2570,7 @@ export default function App() {
           event.target.value = '';
         }}
         onKeyDown={(event) => {
-          if (!session || session.status !== 'active' || selectedIdx === null) return;
+          if (!canInteractWithBoard || !activeSession || selectedIdx === null) return;
 
           if (event.key === 'Escape') {
             event.preventDefault();
@@ -1975,7 +2583,7 @@ export default function App() {
             clearDragState();
             setLetters((prev) => {
               const next = [...prev];
-              next[selectedIdx] = session.currentRoot[selectedIdx] ?? next[selectedIdx];
+              next[selectedIdx] = activeSession.currentRoot[selectedIdx] ?? next[selectedIdx];
               return next;
             });
             event.currentTarget.value = '';
@@ -1986,7 +2594,9 @@ export default function App() {
       <main className="relative mx-auto flex min-h-screen w-full max-w-[96rem] flex-col justify-between px-3 py-3 md:px-5 md:py-5">
         <header className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-[0.68rem] font-black uppercase tracking-[0.3em] text-slate-500">Time left</div>
+            <div className="text-[0.68rem] font-black uppercase tracking-[0.3em] text-slate-500">
+              {mode === 'multiplayer' ? 'Control window' : 'Time left'}
+            </div>
             <div
               className={[
                 'mt-2 text-[clamp(3.8rem,11vw,6.6rem)] font-black leading-none tabular-nums text-slate-950',
@@ -2005,6 +2615,11 @@ export default function App() {
             <span className="rounded-full border border-white/80 bg-white/76 px-3 py-1.5 text-[0.72rem] font-black uppercase tracking-[0.2em] text-slate-700">
               Roots {visitedCountValue}
             </span>
+            {mode === 'multiplayer' && room ? (
+              <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 text-[0.72rem] font-black uppercase tracking-[0.2em] text-sky-700">
+                Room {room.code}
+              </span>
+            ) : null}
             <span
               className={[
                 'px-3 py-1.5 text-[0.72rem] font-black uppercase tracking-[0.2em]',
@@ -2013,6 +2628,20 @@ export default function App() {
             >
               {streakValue > 0 ? `x${streakValue}` : 'x0'}
             </span>
+            {mode === 'multiplayer' && room ? (
+              <span
+                className={[
+                  'rounded-full border px-3 py-1.5 text-[0.72rem] font-black uppercase tracking-[0.2em]',
+                  room.phase === 'open_claim'
+                    ? 'border-amber-200 bg-amber-50 text-amber-800'
+                    : roomIsControlledBySelf
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                      : 'border-rose-200 bg-rose-50 text-rose-700',
+                ].join(' ')}
+              >
+                {room.phase === 'open_claim' ? 'Open claim' : `${roomControllerName} controls`}
+              </span>
+            ) : null}
             {mode === 'journey' && session?.targetRoot ? (
               <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-[0.72rem] font-black uppercase tracking-[0.2em] text-amber-800" dir={activeDisplayDir}>
                 Target {toDisplayDotted(session.targetRoot.split(''), activeTransliteration)}
@@ -2151,7 +2780,7 @@ export default function App() {
                         selected={selectedIdx === index}
                         swapTarget={isActive && dragOverIdx === index}
                         dragging={dragSourceIdx === index}
-                        disabled={!session || session.status !== 'active'}
+                        disabled={!canInteractWithBoard}
                         index={index}
                         slotLabel={SLOT_LABELS[index]}
                         footerLabel={
@@ -2238,19 +2867,23 @@ export default function App() {
                     <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                       <div>
                         <div className="text-[0.68rem] font-black uppercase tracking-[0.32em] text-slate-500">
-                          {showSummary ? 'Round over' : 'Press start'}
+                          {showSummary ? (mode === 'multiplayer' ? 'Room over' : 'Round over') : mode === 'multiplayer' ? 'Create or join' : 'Press start'}
                         </div>
                         <h1 className="mt-2 font-['Suez_One'] text-2xl tracking-tight text-slate-950 md:text-3xl">
                           {showSummary
-                            ? session?.status === 'completed'
-                              ? 'Target reached'
-                              : 'Spin again'
+                            ? mode === 'multiplayer'
+                              ? 'Room closed'
+                              : activeSession?.status === 'completed'
+                                ? 'Target reached'
+                                : 'Spin again'
                             : 'שורשים בזרימה'}
                         </h1>
                         <p className="mt-1 max-w-xl text-sm leading-6 text-slate-600">
                           {showSummary
-                            ? formatReason(session?.reason) || 'The round is over.'
-                            : 'Three live roots inside one mosaic. Find fresh roots fast.'}
+                            ? formatReason(activeSession?.reason) || (mode === 'multiplayer' ? 'The room is over.' : 'The round is over.')
+                            : mode === 'multiplayer'
+                              ? 'Share a room code. The first valid root claims control, and streaks stretch that control window.'
+                              : 'Three live roots inside one mosaic. Find fresh roots fast.'}
                         </p>
                       </div>
 
@@ -2278,6 +2911,18 @@ export default function App() {
                           onClick={() => setMode('journey')}
                         >
                           Journey
+                        </button>
+                        <button
+                          type="button"
+                          className={[
+                            'rounded-full px-4 py-2 text-sm font-black transition',
+                            mode === 'multiplayer'
+                              ? 'bg-slate-950 text-white'
+                              : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50',
+                          ].join(' ')}
+                          onClick={() => setMode('multiplayer')}
+                        >
+                          Multiplayer
                         </button>
                       </div>
                     </div>
@@ -2316,7 +2961,7 @@ export default function App() {
                             <div className="mt-1 text-xs font-semibold text-slate-600">
                               You stopped at{' '}
                               <span className="font-mono font-black text-slate-900" dir={activeDisplayDir}>
-                                {formatDisplayRoot(session?.currentRoot ?? '', activeTransliteration)}
+                                {formatDisplayRoot(activeSession?.currentRoot ?? '', activeTransliteration)}
                               </span>
                               .
                             </div>
@@ -2371,69 +3016,178 @@ export default function App() {
                       </div>
                     ) : null}
 
-                    <div className="mt-4 grid gap-3 md:grid-cols-[repeat(3,minmax(0,1fr))_auto]">
-                      {[
-                        {
-                          id: 'countdown',
-                          label: 'Countdown',
-                          value: countdownMs,
-                          setValue: setCountdownMs,
-                        },
-                        {
-                          id: 'bonusBase',
-                          label: 'Base bonus',
-                          value: bonusBaseMs,
-                          setValue: setBonusBaseMs,
-                        },
-                        {
-                          id: 'bonusWindow',
-                          label: 'Speed window',
-                          value: bonusWindowMs,
-                          setValue: setBonusWindowMs,
-                        },
-                      ].map((field) => (
-                        <label
-                          key={field.id}
-                          htmlFor={field.id}
-                          className="rounded-[1.4rem] border border-slate-200 bg-slate-50 px-4 py-3"
-                        >
-                          <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
-                            {field.label}
-                          </div>
-                          <div className="mt-2 flex items-end gap-2">
+                    {mode === 'multiplayer' ? (
+                      <>
+                        <div className="mt-4 grid gap-3 md:grid-cols-2">
+                          <label className="rounded-[1.4rem] border border-slate-200 bg-slate-50 px-4 py-3">
+                            <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
+                              Your name
+                            </div>
                             <input
-                              id={field.id}
-                              type="number"
-                              min={1}
-                              step={1}
-                              value={Math.round(field.value / 1000)}
-                              onChange={(event) => {
-                                const nextSeconds = Number(event.target.value);
-                                if (!Number.isFinite(nextSeconds)) return;
-                                field.setValue(Math.max(1, Math.round(nextSeconds)) * 1000);
-                              }}
-                              className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left font-mono text-xl font-black text-slate-950 outline-none transition focus:border-sky-400"
+                              value={roomPlayerNameInput}
+                              onChange={(event) => setRoomPlayerNameInput(event.target.value)}
+                              placeholder="Player name"
+                              className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-base font-black text-slate-950 outline-none transition focus:border-sky-400"
                               dir="ltr"
                             />
-                            <span className="pb-3 text-sm font-black text-slate-500">sec</span>
-                          </div>
-                        </label>
-                      ))}
-                      <button
-                        id="start-btn"
-                        type="button"
-                        onClick={startSession}
-                        disabled={loadingSession}
-                        className="rounded-[1.5rem] bg-slate-950 px-6 py-4 text-lg font-black text-white shadow-[0_20px_60px_-28px_rgba(15,23,42,0.88)] transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
-                      >
-                        {loadingSession ? 'Starting...' : session ? 'Play again' : 'Start run'}
-                      </button>
-                    </div>
+                          </label>
+                          <label className="rounded-[1.4rem] border border-slate-200 bg-slate-50 px-4 py-3">
+                            <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
+                              Room code
+                            </div>
+                            <input
+                              value={roomCodeInput}
+                              onChange={(event) => setRoomCodeInput(event.target.value.toUpperCase())}
+                              placeholder="Join with code"
+                              className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-base font-black uppercase text-slate-950 outline-none transition focus:border-sky-400"
+                              dir="ltr"
+                            />
+                          </label>
+                        </div>
+
+                        <div className="mt-3 grid gap-3 md:grid-cols-4">
+                          {[
+                            {
+                              id: 'bonusBase',
+                              label: 'Base bonus',
+                              value: bonusBaseMs,
+                              setValue: setBonusBaseMs,
+                            },
+                            {
+                              id: 'bonusWindow',
+                              label: 'Speed window',
+                              value: bonusWindowMs,
+                              setValue: setBonusWindowMs,
+                            },
+                            {
+                              id: 'controlWindow',
+                              label: 'Claim window',
+                              value: controlWindowMs,
+                              setValue: setControlWindowMs,
+                            },
+                            {
+                              id: 'maxControl',
+                              label: 'Control cap',
+                              value: maxControlMs,
+                              setValue: setMaxControlMs,
+                            },
+                          ].map((field) => (
+                            <label
+                              key={field.id}
+                              htmlFor={field.id}
+                              className="rounded-[1.4rem] border border-slate-200 bg-slate-50 px-4 py-3"
+                            >
+                              <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
+                                {field.label}
+                              </div>
+                              <div className="mt-2 flex items-end gap-2">
+                                <input
+                                  id={field.id}
+                                  type="number"
+                                  min={1}
+                                  step={1}
+                                  value={Math.round(field.value / 1000)}
+                                  onChange={(event) => {
+                                    const nextSeconds = Number(event.target.value);
+                                    if (!Number.isFinite(nextSeconds)) return;
+                                    field.setValue(Math.max(1, Math.round(nextSeconds)) * 1000);
+                                  }}
+                                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left font-mono text-xl font-black text-slate-950 outline-none transition focus:border-sky-400"
+                                  dir="ltr"
+                                />
+                                <span className="pb-3 text-sm font-black text-slate-500">sec</span>
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap gap-3">
+                          <button
+                            id="create-room-btn"
+                            type="button"
+                            onClick={createRoom}
+                            disabled={loadingRoom}
+                            className="rounded-[1.5rem] bg-slate-950 px-6 py-4 text-lg font-black text-white shadow-[0_20px_60px_-28px_rgba(15,23,42,0.88)] transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+                          >
+                            {loadingRoom ? 'Working...' : room ? 'New room' : 'Create room'}
+                          </button>
+                          <button
+                            id="join-room-btn"
+                            type="button"
+                            onClick={joinRoom}
+                            disabled={loadingRoom}
+                            className="rounded-[1.5rem] border border-slate-200 bg-white px-6 py-4 text-lg font-black text-slate-800 shadow-[0_20px_60px_-28px_rgba(15,23,42,0.2)] transition hover:-translate-y-0.5 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
+                          >
+                            Join room
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="mt-4 grid gap-3 md:grid-cols-[repeat(3,minmax(0,1fr))_auto]">
+                        {[
+                          {
+                            id: 'countdown',
+                            label: 'Countdown',
+                            value: countdownMs,
+                            setValue: setCountdownMs,
+                          },
+                          {
+                            id: 'bonusBase',
+                            label: 'Base bonus',
+                            value: bonusBaseMs,
+                            setValue: setBonusBaseMs,
+                          },
+                          {
+                            id: 'bonusWindow',
+                            label: 'Speed window',
+                            value: bonusWindowMs,
+                            setValue: setBonusWindowMs,
+                          },
+                        ].map((field) => (
+                          <label
+                            key={field.id}
+                            htmlFor={field.id}
+                            className="rounded-[1.4rem] border border-slate-200 bg-slate-50 px-4 py-3"
+                          >
+                            <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
+                              {field.label}
+                            </div>
+                            <div className="mt-2 flex items-end gap-2">
+                              <input
+                                id={field.id}
+                                type="number"
+                                min={1}
+                                step={1}
+                                value={Math.round(field.value / 1000)}
+                                onChange={(event) => {
+                                  const nextSeconds = Number(event.target.value);
+                                  if (!Number.isFinite(nextSeconds)) return;
+                                  field.setValue(Math.max(1, Math.round(nextSeconds)) * 1000);
+                                }}
+                                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left font-mono text-xl font-black text-slate-950 outline-none transition focus:border-sky-400"
+                                dir="ltr"
+                              />
+                              <span className="pb-3 text-sm font-black text-slate-500">sec</span>
+                            </div>
+                          </label>
+                        ))}
+                        <button
+                          id="start-btn"
+                          type="button"
+                          onClick={startSession}
+                          disabled={loadingSession}
+                          className="rounded-[1.5rem] bg-slate-950 px-6 py-4 text-lg font-black text-white shadow-[0_20px_60px_-28px_rgba(15,23,42,0.88)] transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+                        >
+                          {loadingSession ? 'Starting...' : session ? 'Play again' : 'Start run'}
+                        </button>
+                      </div>
+                    )}
 
                     {!showSummary ? (
                       <p className="mt-3 text-sm leading-6 text-slate-600">
-                        Repeat roots are blocked. Quick hits pay bigger time refills. X bonus lives at 1-3,
-                        Y at 4-8, Z at 9-12, and every miss drops you back to 0.
+                        {mode === 'multiplayer'
+                          ? 'Each player has their own streak and score. Invalid roots reset only your streak. While one player controls the board, everyone else waits for the window to expire.'
+                          : 'Repeat roots are blocked. Quick hits pay bigger time refills. X bonus lives at 1-3, Y at 4-8, Z at 9-12, and every miss drops you back to 0.'}
                       </p>
                     ) : null}
                   </div>
@@ -2515,14 +3269,31 @@ export default function App() {
                   </div>
 
                   <div
-                    className="flex flex-wrap items-center justify-center gap-2 rounded-full border border-white/75 bg-white/68 px-3 py-2 text-[0.72rem] font-black uppercase tracking-[0.2em] text-slate-700 shadow-sm backdrop-blur"
+                    className={[
+                      'flex flex-wrap items-center justify-center gap-2 rounded-[1.35rem] border px-4 py-3 text-[0.76rem] font-black uppercase tracking-[0.18em] backdrop-blur',
+                      keyboardIndicatorShellClass,
+                    ].join(' ')}
                     dir="ltr"
                   >
-                    <span className="text-slate-500">Keyboard</span>
-                    <span className={['rounded-full border px-3 py-1', keyboardIndicatorToneClass].join(' ')} dir={keyboardIndicatorDir}>
+                    <span className="rounded-full border border-white/70 bg-white/72 px-3 py-1 text-[0.64rem] text-slate-600">
+                      Keyboard
+                    </span>
+                    <span className={['h-3 w-3 rounded-full', keyboardIndicatorDotClass].join(' ')} />
+                    <span className="text-[0.8rem] tracking-[0.24em] text-current">
+                      {keyboardIndicatorStatusLabel}
+                    </span>
+                    <span
+                      className={[
+                        'rounded-full border border-white/75 bg-white/80 px-3 py-1.5 text-[0.82rem] shadow-sm',
+                        keyboardIndicatorToneClass,
+                      ].join(' ')}
+                      dir={keyboardIndicatorDir}
+                    >
                       {keyboardIndicatorLabel}
                     </span>
-                    <span className="text-slate-500">{keyboardIndicatorHint}</span>
+                    <span className="text-center text-[0.66rem] tracking-[0.2em] text-current/80">
+                      {keyboardIndicatorHint}
+                    </span>
                   </div>
                 </div>
               ) : null}
@@ -2532,6 +3303,26 @@ export default function App() {
                   ? `Solved in ${formatElapsed(lastMove.elapsedMs ?? 0)}`
                   : helperText}
               </p>
+
+              {mode === 'multiplayer' && roomRoster.length > 0 ? (
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  {roomRoster.map((player) => (
+                    <span
+                      key={player.id}
+                      className={[
+                        'rounded-full border px-3 py-2 text-[0.68rem] font-black uppercase tracking-[0.16em]',
+                        player.isSelf
+                          ? 'border-slate-950 bg-slate-950 text-white'
+                          : room?.controllerPlayerId === player.id
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                            : 'border-white/80 bg-white/76 text-slate-700',
+                      ].join(' ')}
+                    >
+                      {player.name} · {player.score} · x{player.streak} · {player.takeovers} takeovers
+                    </span>
+                  ))}
+                </div>
+              ) : null}
             </div>
 
           </div>
@@ -2699,7 +3490,9 @@ export default function App() {
             <div className="rounded-[1.25rem] border border-slate-200 bg-slate-50 p-3">
               <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">Session</div>
               <div className="mt-1 text-sm font-bold text-slate-900">{sessionStateLabel}</div>
-              <div className="mt-1 text-xs text-slate-500">{session?.id ?? 'No active session'}</div>
+              <div className="mt-1 text-xs text-slate-500">
+                {room ? `Room ${room.code}` : activeSession?.id ?? 'No active session'}
+              </div>
             </div>
             <div className="rounded-[1.25rem] border border-slate-200 bg-slate-50 p-3">
               <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">Selected slot</div>
@@ -2774,10 +3567,10 @@ export default function App() {
             >
               Check backend
             </button>
-            {session ? (
+            {activeSession ? (
               <button
                 type="button"
-                onClick={() => void refreshSessionState(false)}
+                onClick={() => void (room ? refreshRoomState(false) : refreshSessionState(false))}
                 className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black uppercase tracking-[0.18em] text-slate-700 transition hover:bg-slate-50"
               >
                 Refresh state
@@ -2786,11 +3579,11 @@ export default function App() {
             <button
               id="debug-restart-btn"
               type="button"
-              onClick={startSession}
-              disabled={loadingSession}
+              onClick={mode === 'multiplayer' ? createRoom : startSession}
+              disabled={mode === 'multiplayer' ? loadingRoom : loadingSession}
               className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black uppercase tracking-[0.18em] text-white transition hover:bg-slate-800 disabled:opacity-60"
             >
-              {loadingSession ? 'Starting' : 'Restart'}
+              {mode === 'multiplayer' ? (loadingRoom ? 'Working' : 'Create room') : loadingSession ? 'Starting' : 'Restart'}
             </button>
           </div>
 
@@ -2930,13 +3723,13 @@ export default function App() {
                     key={`${edge.neighbor}-${edge.type}-${edge.positionA}-${edge.positionB}`}
                     type="button"
                     onClick={() => setLetters(edge.neighbor.split(''))}
-                    disabled={!session || session.status !== 'active'}
+                    disabled={!canInteractWithBoard}
                     className={[
                       'rounded-xl border px-3 py-2 text-xs font-black transition',
                       edge.type === 'SWAP'
                         ? 'border-sky-200 bg-sky-50 text-sky-700'
                         : 'border-emerald-200 bg-emerald-50 text-emerald-700',
-                      !session || session.status !== 'active'
+                      !canInteractWithBoard
                         ? 'cursor-not-allowed opacity-50'
                         : 'hover:-translate-y-0.5',
                     ].join(' ')}

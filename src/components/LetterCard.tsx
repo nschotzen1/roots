@@ -48,7 +48,7 @@ export default function LetterCard({
   const isEmbedded = variant === 'embedded';
   const showEmbeddedTag = isEmbedded && (selected || swapTarget || dragging);
   const showImage = Boolean(imgSrc) && imageStatus === 'loaded';
-  const showText = !showImage;
+  const showText = selected || !showImage;
 
   return (
     <button
@@ -106,6 +106,9 @@ export default function LetterCard({
         ].join(' ')}
       />
       {isEmbedded && selected ? (
+        <div className="mosaic-slot-focus-frame pointer-events-none absolute inset-[2.8%] z-[2] rounded-[1rem]" />
+      ) : null}
+      {isEmbedded && selected ? (
         <div className="pointer-events-none absolute inset-x-0 top-[4.5%] flex justify-center">
           <div
             className={[
@@ -141,7 +144,7 @@ export default function LetterCard({
             showImage
               ? isEmbedded
                 ? selected
-                  ? 'scale-[1.03] opacity-[0.96] saturate-[1.02] brightness-[1.04]'
+                  ? 'scale-[1.01] opacity-[0.32] saturate-[0.88] brightness-[0.96]'
                   : swapTarget
                     ? 'opacity-[0.92] saturate-[0.96] brightness-[1.01]'
                     : 'opacity-[0.9] saturate-[0.94] brightness-[0.99]'
@@ -155,6 +158,9 @@ export default function LetterCard({
       <div className={isEmbedded ? 'absolute inset-x-[8%] top-[4%] h-[16%] rounded-full bg-[linear-gradient(180deg,rgba(255,255,255,0.46),rgba(255,255,255,0))]' : 'absolute inset-x-[10%] top-[6%] h-[15%] rounded-full bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(255,255,255,0))]'} />
       <div className={isEmbedded ? 'absolute inset-x-[8%] bottom-[4%] h-[16%] rounded-full bg-[linear-gradient(0deg,rgba(15,23,42,0.18),rgba(15,23,42,0))]' : 'absolute inset-x-[10%] bottom-[7%] h-[16%] rounded-full bg-[linear-gradient(0deg,rgba(15,23,42,0.12),rgba(15,23,42,0))]'} />
       <div className={isEmbedded ? 'absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.16)_0%,rgba(255,255,255,0)_24%,rgba(15,23,42,0.05)_84%,rgba(15,23,42,0.2)_100%)]' : 'absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.42)_0%,rgba(255,255,255,0)_24%,rgba(15,23,42,0.04)_76%,rgba(15,23,42,0.16)_100%)]'} />
+      {isEmbedded && selected ? (
+        <div className="pointer-events-none absolute inset-[18%] rounded-[40%] bg-[radial-gradient(circle,rgba(255,248,225,0.52),rgba(255,248,225,0.18)_38%,rgba(255,248,225,0)_72%)]" />
+      ) : null}
       {!isEmbedded ? (
         <div className="absolute inset-x-0 top-0 flex items-start justify-end px-3 pt-3">
           <div
@@ -174,7 +180,7 @@ export default function LetterCard({
               ? [
                   'select-none font-black tracking-[0.01em] text-[#22160b] transition-all duration-200',
                   selected
-                    ? 'text-[clamp(4.35rem,11.4vw,7.6rem)] text-slate-950 drop-shadow-[0_0_22px_rgba(224,242,254,0.98)]'
+                    ? 'text-[clamp(4.55rem,11.8vw,7.9rem)] text-slate-950 drop-shadow-[0_0_26px_rgba(255,255,255,0.98)]'
                     : 'text-[clamp(3.35rem,9.8vw,6.4rem)] drop-shadow-[0_3px_10px_rgba(255,248,225,0.32)]',
                 ].join(' ')
               : 'select-none text-[clamp(3rem,9vw,5.8rem)] font-black tracking-[0.08em] text-slate-900 drop-shadow-[0_2px_6px_rgba(255,255,255,0.72)]',
