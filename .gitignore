@@ -11,7 +11,9 @@ node_modules
 dist
 dist-ssr
 *.local
-backend/
+backend/node_modules/
+backend/.env
+backend/.env.local
 docker-compose.yml
 output/
 progress.md

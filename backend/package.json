@@ -1,0 +1,21 @@
+{
+  "name": "root-game-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "seed": "node src/seed.js",
+    "scrape:roots": "node src/scrapeRoots.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.37.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "neo4j-driver": "^5.28.1",
+    "uuid": "^11.1.0"
+  }
+}

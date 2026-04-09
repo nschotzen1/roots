@@ -1,6 +1,6 @@
 # Root Game (Hebrew Roots)
 
-A frontend-only Vite app for the Hebrew roots game. The full game now runs in browser memory by default, so it can be deployed to Vercel without a backend.
+A Vite frontend for the Hebrew roots game with an optional bundled backend. By default the deployed app still runs fully in browser memory; the Vercel API can be enabled separately once the backend persistence work is finished.
 
 ## What It Includes
 
@@ -34,14 +34,27 @@ npm run build
 npm run preview
 ```
 
+## Verify Source Coverage
+
+The bundled dataset already matches the normalized 3-letter roots listed on [tora.quest/tnk1/ljon/jorj/index.html](https://tora.quest/tnk1/ljon/jorj/index.html).
+
+Run this check any time you want to re-verify the source sync:
+
+```bash
+npm run roots:verify
+```
+
+The verifier compares Hebrew anchor text from the source page, not the page slugs, because the site uses a different Latin transliteration scheme. It intentionally filters to 3-letter roots because the current game only supports 3-letter play.
+
 ## Deploy To Vercel
 
-This repo is ready to deploy as a static Vite site.
+This repo now ships as a Vite site plus bundled Vercel functions under `/api/*`.
 
 1. Push it to GitHub, GitLab, or Bitbucket.
 2. Import it into Vercel.
-3. Leave `VITE_API_BASE_URL` unset unless you intentionally want to use an external API.
-4. If Vercel asks for settings, use:
+3. Leave `VITE_API_BASE_URL` unset for the current safe default.
+4. If you want the frontend to call the bundled API later, set `VITE_API_BASE_URL=/`.
+5. If Vercel asks for settings, use:
 
 ```bash
 Build Command: npm run build
@@ -49,6 +62,13 @@ Output Directory: dist
 ```
 
 `vercel.json` is already included for this setup.
+
+## Current Backend Limits On Vercel
+
+- The bundled API is deployable on Vercel now.
+- Multiplayer rooms can be made durable by setting `ROOMS_BACKEND=redis` plus Upstash Redis credentials.
+- Root suggestion writes default to an in-memory fallback on Vercel because serverless filesystems are read-only.
+- Single-player session state is still memory-backed in the backend, so keep `VITE_API_BASE_URL` unset until the Redis/session persistence work is complete.
 
 ## Optional External API
 

@@ -1,4 +1,5 @@
-import rootsRaw from './data/roots_hebrew_scraped.txt?raw';
+import hebrewRootsRaw from './data/roots_hebrew_scraped.txt?raw';
+import arabicRootsRaw from './data/roots_arabic_scraped.txt?raw';
 import {
   createComboState,
   resolveMoveOutcome,
@@ -8,6 +9,7 @@ import {
 } from './playRules';
 
 type GameMode = 'journey' | 'survival';
+type LanguageMode = 'hebrew' | 'arabic';
 type SessionStatus = 'active' | 'game_over' | 'completed';
 type RoomStatus = 'active' | 'completed';
 type RoomPhase = 'open_claim' | 'controlled';
@@ -33,6 +35,7 @@ type NeighborEdge = {
 type SessionSnapshot = {
   id: string;
   mode: GameMode;
+  language: LanguageMode;
   status: SessionStatus;
   reason: string | null;
   currentRoot: string;
@@ -137,6 +140,7 @@ type RoomPlayerAuth = {
 type RoomSnapshot = {
   id: string;
   code: string;
+  language: LanguageMode;
   version: number;
   status: RoomStatus;
   phase: RoomPhase;
@@ -191,6 +195,7 @@ type RootSuggestionStatus = 'pending' | 'approved' | 'rejected';
 
 type RootSuggestion = {
   id: string;
+  language: LanguageMode;
   root: string;
   dottedRoot: string;
   status: RootSuggestionStatus;
@@ -215,6 +220,7 @@ type RootRow = {
 type InternalSession = {
   id: string;
   mode: GameMode;
+  language: LanguageMode;
   status: SessionStatus;
   reason: string | null;
   createdAtMs: number;
@@ -255,6 +261,7 @@ type InternalRoomPlayer = {
 type InternalRoom = {
   id: string;
   code: string;
+  language: LanguageMode;
   version: number;
   status: RoomStatus;
   phase: RoomPhase;
@@ -311,6 +318,9 @@ type Store = {
   adjacencyByRoot: Map<string, NeighborEdge[]>;
 };
 
+type StoreByLanguage = Record<LanguageMode, Store>;
+type ApprovedRootsByLanguage = Record<LanguageMode, string[]>;
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL?.trim() ?? '';
 const USE_REMOTE_API = API_BASE.length > 0;
 const DEFAULT_ROOT_LENGTH = 3;
@@ -323,6 +333,12 @@ const DEFAULT_ROOM_CONTROL_WINDOW_MS = 8_000;
 const DEFAULT_ROOM_MAX_CONTROL_MS = 12_000;
 const DEFAULT_ROOM_MAX_PLAYERS = 4;
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const LANGUAGE_MODES: LanguageMode[] = ['hebrew', 'arabic'];
+const DEFAULT_LANGUAGE_MODE: LanguageMode = 'hebrew';
+const ROOTS_BY_LANGUAGE_RAW: Record<LanguageMode, string> = {
+  hebrew: hebrewRootsRaw,
+  arabic: arabicRootsRaw,
+};
 const HEB_TO_GAME: Record<string, string> = {
   א: 'a',
   ב: 'b',
@@ -366,9 +382,17 @@ const FINAL_HEBREW_TO_REGULAR: Record<string, string> = {
 const HEBREW_BASE_LETTERS_REGEX = /[אבגדהוזחטיכלמנסעפצקרשת]/;
 const HEBREW_CHAR_REGEX = /[אבגדהוזחטיכלמנסעפצקרשתךםןףץ]/;
 const NIQQUD_REGEX = /[\u0591-\u05C7]/g;
+const ARABIC_ROOT_CHAR_SET = new Set(
+  Array.from('ءآأؤإئابتثجحخدذرزسشصضطظعغفقكلمنهوي'),
+);
+const ARABIC_CHAR_REGEX = /[\u0600-\u06FF]/;
+const ARABIC_DIACRITICS_REGEX = /[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]/g;
+const ARABIC_CHAR_NORMALIZATION: Record<string, string> = {
+  ٱ: 'ا',
+  ى: 'ي',
+};
 
-let localTimeOffsetMs = 0;
-let store: Store = {
+const createEmptyStore = (): Store => ({
   initialized: false,
   stats: {
     rootsCount: 0,
@@ -379,10 +403,16 @@ let store: Store = {
   rootsByPlain: new Map(),
   rootsByLength: new Map(),
   adjacencyByRoot: new Map(),
+});
+
+let localTimeOffsetMs = 0;
+const storesByLanguage: StoreByLanguage = {
+  hebrew: createEmptyStore(),
+  arabic: createEmptyStore(),
 };
 const sessions = new Map<string, InternalSession>();
 let localSuggestions: RootSuggestion[] | null = null;
-let localApprovedRoots: string[] | null = null;
+let localApprovedRootsByLanguage: ApprovedRootsByLanguage | null = null;
 let localRoomsByCode: Map<string, InternalRoom> | null = null;
 
 const getNow = () => Date.now() + localTimeOffsetMs;
@@ -439,9 +469,16 @@ const normalizeSessionMode = (mode: unknown): GameMode => {
   return SESSION_MODES.includes(normalized as GameMode) ? (normalized as GameMode) : 'survival';
 };
 
+const normalizeLanguageMode = (value: unknown): LanguageMode => {
+  const normalized = String(value || DEFAULT_LANGUAGE_MODE).toLowerCase();
+  return LANGUAGE_MODES.includes(normalized as LanguageMode)
+    ? (normalized as LanguageMode)
+    : DEFAULT_LANGUAGE_MODE;
+};
+
 const isAsciiLetter = (ch: string) => /^[a-z]$/i.test(ch);
 
-const normalizeGameChar = (ch: unknown) => {
+const normalizeHebrewGameChar = (ch: unknown) => {
   const value = String(ch || '').toLowerCase();
   if (value.length !== 1) return null;
   if (Object.hasOwn(LEGACY_SYMBOL_TO_GAME, value)) return LEGACY_SYMBOL_TO_GAME[value];
@@ -478,8 +515,9 @@ const transliterateHebrewRoot = (value: string) => {
 };
 
 const hasHebrewChars = (value: unknown) => HEBREW_CHAR_REGEX.test(String(value || ''));
+const hasArabicChars = (value: unknown) => ARABIC_CHAR_REGEX.test(String(value || ''));
 
-const normalizeGameRoot = (value: unknown, expectedLength = DEFAULT_ROOT_LENGTH) => {
+const normalizeHebrewGameRoot = (value: unknown, expectedLength = DEFAULT_ROOT_LENGTH) => {
   if (!value) return null;
 
   const collapsed = String(value)
@@ -490,7 +528,7 @@ const normalizeGameRoot = (value: unknown, expectedLength = DEFAULT_ROOT_LENGTH)
   if (!collapsed) return null;
 
   const normalized = Array.from(collapsed)
-    .map((ch) => normalizeGameChar(ch))
+    .map((ch) => normalizeHebrewGameChar(ch))
     .filter((ch): ch is string => Boolean(ch))
     .join('');
 
@@ -500,40 +538,90 @@ const normalizeGameRoot = (value: unknown, expectedLength = DEFAULT_ROOT_LENGTH)
   return normalized;
 };
 
-const parseRootInput = (value: unknown, expectedLength = DEFAULT_ROOT_LENGTH) => {
+const normalizeArabicChar = (ch: unknown) => {
+  const value = String(ch || '');
+  if (value.length !== 1) return null;
+  const normalized = ARABIC_CHAR_NORMALIZATION[value] ?? value;
+  return ARABIC_ROOT_CHAR_SET.has(normalized) ? normalized : null;
+};
+
+const normalizeArabicRoot = (value: unknown, expectedLength = DEFAULT_ROOT_LENGTH) => {
   if (!value) return null;
-  if (hasHebrewChars(value)) {
-    const transliterated = transliterateHebrewRoot(String(value));
-    return normalizeGameRoot(transliterated, expectedLength);
+
+  const collapsed = String(value)
+    .replace(/[._,\s-]+/g, '')
+    .replace(ARABIC_DIACRITICS_REGEX, '')
+    .trim();
+
+  if (!collapsed) return null;
+
+  const normalized = Array.from(collapsed)
+    .map((ch) => normalizeArabicChar(ch))
+    .filter((ch): ch is string => Boolean(ch))
+    .join('');
+
+  if (!normalized) return null;
+  if (expectedLength && normalized.length !== expectedLength) return null;
+
+  return normalized;
+};
+
+const normalizeRootChar = (ch: unknown, language: LanguageMode) =>
+  language === 'arabic' ? normalizeArabicChar(ch) : normalizeHebrewGameChar(ch);
+
+const parseRootInput = (
+  value: unknown,
+  language: LanguageMode,
+  expectedLength = DEFAULT_ROOT_LENGTH,
+) => {
+  if (!value) return null;
+
+  if (language === 'arabic') {
+    return normalizeArabicRoot(value, expectedLength);
   }
 
-  return normalizeGameRoot(value, expectedLength);
+  if (hasHebrewChars(value)) {
+    const transliterated = transliterateHebrewRoot(String(value));
+    return normalizeHebrewGameRoot(transliterated, expectedLength);
+  }
+
+  return normalizeHebrewGameRoot(value, expectedLength);
 };
 
 const toDottedRoot = (plainRoot: string | null | undefined) =>
-  plainRoot ? plainRoot.split('').join('.') : '';
+  plainRoot ? Array.from(plainRoot).join('.') : '';
 
-const parseLineRoot = (line: string, rootLength: number) => {
+const parseLineRoot = (line: string, language: LanguageMode, rootLength: number) => {
   const trimmed = (line || '').split('#')[0].trim();
   if (!trimmed) return null;
 
-  if (hasHebrewChars(trimmed)) {
-    const transliterated = transliterateHebrewRoot(trimmed);
-    return normalizeGameRoot(transliterated, rootLength);
+  if (language === 'arabic' || hasArabicChars(trimmed)) {
+    return normalizeArabicRoot(trimmed, rootLength);
   }
 
-  return parseRootInput(trimmed, rootLength);
+  if (hasHebrewChars(trimmed)) {
+    const transliterated = transliterateHebrewRoot(trimmed);
+    return normalizeHebrewGameRoot(transliterated, rootLength);
+  }
+
+  return parseRootInput(trimmed, language, rootLength);
 };
 
-const loadRootsFromRaw = (content: string, rootLength = DEFAULT_ROOT_LENGTH) => {
+const loadRootsFromRaw = (
+  content: string,
+  language: LanguageMode,
+  rootLength = DEFAULT_ROOT_LENGTH,
+) => {
   const roots = new Set<string>();
 
   for (const line of content.split(/\r?\n/)) {
-    const root = parseLineRoot(line, rootLength);
+    const root = parseLineRoot(line, language, rootLength);
     if (root) roots.add(root);
   }
 
-  return [...roots].sort();
+  return [...roots].sort((left, right) =>
+    language === 'arabic' ? left.localeCompare(right, 'ar') : left.localeCompare(right),
+  );
 };
 
 const createEdgeId = (edge: MoveEdge) =>
@@ -663,6 +751,15 @@ const parseStoredArray = <T,>(value: string | null, fallback: T[]): T[] => {
   }
 };
 
+const parseStoredJson = (value: string | null) => {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+};
+
 const normalizeRoomCode = (value: unknown) => {
   const normalized = String(value || '')
     .toUpperCase()
@@ -712,8 +809,9 @@ const serializeStoredRoom = (room: InternalRoom): StoredRoom => ({
 });
 
 const deserializeStoredRoom = (value: StoredRoom | Partial<StoredRoom>) => {
+  const language = normalizeLanguageMode(value.language);
   const code = normalizeRoomCode(value.code);
-  const currentRoot = parseBodyRoot(value.currentRoot);
+  const currentRoot = parseRootInput(value.currentRoot, language);
   if (!code || !currentRoot || !Array.isArray(value.players) || value.players.length === 0) return null;
 
   const players = value.players.reduce<InternalRoomPlayer[]>((acc, candidate, index) => {
@@ -760,6 +858,7 @@ const deserializeStoredRoom = (value: StoredRoom | Partial<StoredRoom>) => {
   return {
     id: typeof value.id === 'string' && value.id ? value.id : createOpaqueId('room'),
     code,
+    language,
     version: Math.max(1, Math.floor(Number(value.version) || 1)),
     status: value.status === 'completed' ? 'completed' : 'active',
     phase: value.phase === 'controlled' ? 'controlled' : 'open_claim',
@@ -772,7 +871,7 @@ const deserializeStoredRoom = (value: StoredRoom | Partial<StoredRoom>) => {
     visited: new Set(
       Array.isArray(value.visited)
         ? value.visited
-            .map((candidate) => parseBodyRoot(candidate))
+            .map((candidate) => parseRootInput(candidate, language))
             .filter((candidate): candidate is string => Boolean(candidate))
         : [currentRoot],
     ),
@@ -784,7 +883,7 @@ const deserializeStoredRoom = (value: StoredRoom | Partial<StoredRoom>) => {
     turnStartedAtMs: Number(value.turnStartedAtMs) || Number(value.startedAtMs) || getNow(),
     allowRevisit: Boolean(value.allowRevisit),
     types: normalizeMoveTypes(value.types),
-    letterBank: normalizeLetterBank(value.letterBank),
+    letterBank: normalizeLetterBank(value.letterBank, language),
     config: {
       countdownMs: normalizeNumber(value.config?.countdownMs, 45_000, 10_000, 300_000),
       bonusBaseMs: normalizeNumber(value.config?.bonusBaseMs, 4_000, 500, 60_000),
@@ -866,6 +965,7 @@ const generateUniqueRoomCode = (): string => {
 
 const serializeSuggestion = (value: Partial<RootSuggestion> & { root: string; id: string }): RootSuggestion => ({
   id: value.id,
+  language: normalizeLanguageMode(value.language),
   root: value.root,
   dottedRoot: value.dottedRoot || toDottedRoot(value.root),
   status:
@@ -880,8 +980,49 @@ const serializeSuggestion = (value: Partial<RootSuggestion> & { root: string; id
   reviewedAtMs: value.reviewedAtMs ? Number(value.reviewedAtMs) : null,
 });
 
+const createEmptyApprovedRootsByLanguage = (): ApprovedRootsByLanguage => ({
+  hebrew: [],
+  arabic: [],
+});
+
+const normalizeApprovedRootsByLanguage = (value: unknown): ApprovedRootsByLanguage => {
+  if (Array.isArray(value)) {
+    return {
+      hebrew: [
+        ...new Set(
+          value
+            .map((candidate) => parseRootInput(candidate, 'hebrew'))
+            .filter((candidate): candidate is string => Boolean(candidate)),
+        ),
+      ],
+      arabic: [],
+    };
+  }
+
+  if (!value || typeof value !== 'object') {
+    return createEmptyApprovedRootsByLanguage();
+  }
+
+  const next = createEmptyApprovedRootsByLanguage();
+
+  for (const language of LANGUAGE_MODES) {
+    const candidates = (value as Record<string, unknown>)[language];
+    if (!Array.isArray(candidates)) continue;
+
+    next[language] = [
+      ...new Set(
+        candidates
+          .map((candidate) => parseRootInput(candidate, language))
+          .filter((candidate): candidate is string => Boolean(candidate)),
+      ),
+    ];
+  }
+
+  return next;
+};
+
 const loadLocalSuggestionState = () => {
-  if (localSuggestions && localApprovedRoots) return;
+  if (localSuggestions && localApprovedRootsByLanguage) return;
 
   const storedSuggestions = canUseLocalStorage()
     ? parseStoredArray<RootSuggestion | Partial<RootSuggestion>>(
@@ -890,8 +1031,8 @@ const loadLocalSuggestionState = () => {
       )
     : [];
   const storedApprovedRoots = canUseLocalStorage()
-    ? parseStoredArray<string>(window.localStorage.getItem(LOCAL_APPROVED_ROOTS_STORAGE_KEY), [])
-    : [];
+    ? parseStoredJson(window.localStorage.getItem(LOCAL_APPROVED_ROOTS_STORAGE_KEY))
+    : null;
 
   localSuggestions = storedSuggestions
     .filter((value): value is Partial<RootSuggestion> & { id: string; root: string } =>
@@ -899,13 +1040,7 @@ const loadLocalSuggestionState = () => {
     )
     .map((value) => serializeSuggestion(value))
     .sort((left, right) => right.createdAtMs - left.createdAtMs);
-  localApprovedRoots = [
-    ...new Set(
-      storedApprovedRoots
-        .map((value) => parseRootInput(value))
-        .filter((value): value is string => Boolean(value)),
-    ),
-  ];
+  localApprovedRootsByLanguage = normalizeApprovedRootsByLanguage(storedApprovedRoots);
 };
 
 const persistLocalSuggestionState = () => {
@@ -914,12 +1049,14 @@ const persistLocalSuggestionState = () => {
   window.localStorage.setItem(LOCAL_SUGGESTIONS_STORAGE_KEY, JSON.stringify(localSuggestions ?? []));
   window.localStorage.setItem(
     LOCAL_APPROVED_ROOTS_STORAGE_KEY,
-    JSON.stringify(localApprovedRoots ?? []),
+    JSON.stringify(localApprovedRootsByLanguage ?? createEmptyApprovedRootsByLanguage()),
   );
 };
 
-const buildStoreFromRoots = (roots: string[]) => {
-  const uniqueRoots = [...new Set(roots)].sort();
+const buildStoreFromRoots = (language: LanguageMode, roots: string[]) => {
+  const uniqueRoots = [...new Set(roots)].sort((left, right) =>
+    language === 'arabic' ? left.localeCompare(right, 'ar') : left.localeCompare(right),
+  );
   const rootRows = uniqueRoots.map((plain) => ({
     plain,
     dotted: toDottedRoot(plain),
@@ -964,10 +1101,14 @@ const buildStoreFromRoots = (roots: string[]) => {
   }
 
   for (const edgesForRoot of adjacencyByRoot.values()) {
-    edgesForRoot.sort((left, right) => left.neighbor.localeCompare(right.neighbor));
+    edgesForRoot.sort((left, right) =>
+      language === 'arabic'
+        ? left.neighbor.localeCompare(right.neighbor, 'ar')
+        : left.neighbor.localeCompare(right.neighbor),
+    );
   }
 
-  store = {
+  storesByLanguage[language] = {
     initialized: true,
     stats: {
       rootsCount: rootRows.length,
@@ -981,28 +1122,28 @@ const buildStoreFromRoots = (roots: string[]) => {
   };
 };
 
-const initializeStore = () => {
-  if (store.initialized) return;
+const initializeStore = (language: LanguageMode) => {
+  if (storesByLanguage[language].initialized) return;
 
   loadLocalSuggestionState();
-  const roots = loadRootsFromRaw(rootsRaw, DEFAULT_ROOT_LENGTH);
-  const approvedRoots = localApprovedRoots ?? [];
-  buildStoreFromRoots([...roots, ...approvedRoots]);
+  const roots = loadRootsFromRaw(ROOTS_BY_LANGUAGE_RAW[language], language, DEFAULT_ROOT_LENGTH);
+  const approvedRoots = localApprovedRootsByLanguage?.[language] ?? [];
+  buildStoreFromRoots(language, [...roots, ...approvedRoots]);
 };
 
-const ensureStore = () => {
-  initializeStore();
-  return store;
+const ensureStore = (language: LanguageMode) => {
+  initializeStore(language);
+  return storesByLanguage[language];
 };
 
 const normalizeVisited = (visited: unknown) =>
   new Set(Array.isArray(visited) ? visited.map((value) => String(value || '')).filter(Boolean) : []);
 
-const normalizeLetterBankSet = (letterBank: unknown) =>
+const normalizeLetterBankSet = (letterBank: unknown, language: LanguageMode) =>
   new Set(
     Array.isArray(letterBank)
       ? letterBank
-          .map((value) => normalizeGameChar(value))
+          .map((value) => normalizeRootChar(value, language))
           .filter((value): value is string => Boolean(value))
       : [],
   );
@@ -1030,6 +1171,7 @@ const edgePassesFilters = (
 };
 
 const getFilteredEdges = (
+  language: LanguageMode,
   root: string,
   {
     types,
@@ -1045,11 +1187,11 @@ const getFilteredEdges = (
     letterBank?: unknown;
   } = {},
 ) => {
-  const currentStore = ensureStore();
+  const currentStore = ensureStore(language);
   const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 5000);
   const typeSet = new Set(normalizeMoveTypes(types));
   const visitedSet = normalizeVisited(visited);
-  const letterBankSet = normalizeLetterBankSet(letterBank);
+  const letterBankSet = normalizeLetterBankSet(letterBank, language);
   const hasLetterBank = letterBankSet.size > 0;
   const edges = currentStore.adjacencyByRoot.get(root) || [];
 
@@ -1066,8 +1208,12 @@ const getFilteredEdges = (
     .slice(0, safeLimit);
 };
 
-const bfs = (start: string, { types, maxDepth = 12 }: { types?: unknown; maxDepth?: number } = {}) => {
-  const currentStore = ensureStore();
+const bfs = (
+  language: LanguageMode,
+  start: string,
+  { types, maxDepth = 12 }: { types?: unknown; maxDepth?: number } = {},
+) => {
+  const currentStore = ensureStore(language);
 
   if (!currentStore.rootsByPlain.has(start)) {
     return {
@@ -1100,20 +1246,22 @@ const bfs = (start: string, { types, maxDepth = 12 }: { types?: unknown; maxDept
   return { distances, previous };
 };
 
-const countRoots = async () => ensureStore().stats.rootsCount;
+const countRoots = async (language: LanguageMode) => ensureStore(language).stats.rootsCount;
 
-const rootExists = async (root: string) => ensureStore().rootsByPlain.has(root);
+const rootExists = async (root: string, language: LanguageMode) =>
+  ensureStore(language).rootsByPlain.has(root);
 
-const addRootToStore = (root: string) => {
-  const currentStore = ensureStore();
+const addRootToStore = (root: string, language: LanguageMode) => {
+  const currentStore = ensureStore(language);
   if (currentStore.rootsByPlain.has(root)) return false;
 
   const nextRoots = [...currentStore.rootsByPlain.keys(), root];
-  buildStoreFromRoots(nextRoots);
+  buildStoreFromRoots(language, nextRoots);
   return true;
 };
 
 const getNeighbors = async (
+  language: LanguageMode,
   root: string,
   options: {
     types?: unknown;
@@ -1122,9 +1270,10 @@ const getNeighbors = async (
     visited?: unknown;
     letterBank?: unknown;
   } = {},
-) => getFilteredEdges(root, options);
+) => getFilteredEdges(language, root, options);
 
 const getDirectMove = async (
+  language: LanguageMode,
   from: string,
   to: string,
   options: {
@@ -1132,7 +1281,7 @@ const getDirectMove = async (
     letterBank?: unknown;
   } = {},
 ) => {
-  const edges = getFilteredEdges(from, { ...options, limit: 5000 });
+  const edges = getFilteredEdges(language, from, { ...options, limit: 5000 });
   return edges.find((edge) => edge.neighbor === to) || null;
 };
 
@@ -1141,8 +1290,11 @@ const randomItem = <T,>(items: T[]) => {
   return items[Math.floor(Math.random() * items.length)] ?? null;
 };
 
-const pickRandomRoot = async ({ length = DEFAULT_ROOT_LENGTH, minDegree = 1 } = {}) => {
-  const currentStore = ensureStore();
+const pickRandomRoot = async (
+  language: LanguageMode,
+  { length = DEFAULT_ROOT_LENGTH, minDegree = 1 } = {},
+) => {
+  const currentStore = ensureStore(language);
   const candidates = (currentStore.rootsByLength.get(Number(length)) || []).filter((root) => {
     const degree = (currentStore.adjacencyByRoot.get(root.plain) || []).length;
     return degree >= Number(minDegree);
@@ -1159,6 +1311,7 @@ const pickRandomRoot = async ({ length = DEFAULT_ROOT_LENGTH, minDegree = 1 } = 
 };
 
 const pickJourneyTarget = async (
+  language: LanguageMode,
   from: string,
   {
     minDepth = 3,
@@ -1170,10 +1323,10 @@ const pickJourneyTarget = async (
     types?: unknown;
   } = {},
 ) => {
-  const currentStore = ensureStore();
+  const currentStore = ensureStore(language);
   const safeMinDepth = Math.max(1, Number(minDepth) || 3);
   const safeMaxDepth = Math.max(safeMinDepth, Math.min(Number(maxDepth) || 10, 20));
-  const { distances } = bfs(from, { types, maxDepth: safeMaxDepth });
+  const { distances } = bfs(language, from, { types, maxDepth: safeMaxDepth });
   const candidates: Array<{ plain: string; dotted: string; distance: number }> = [];
 
   for (const [root, distance] of distances.entries()) {
@@ -1193,6 +1346,7 @@ const pickJourneyTarget = async (
 };
 
 const findShortestPath = async (
+  language: LanguageMode,
   from: string,
   to: string,
   { maxDepth = 12, types }: { maxDepth?: number; types?: unknown } = {},
@@ -1205,7 +1359,7 @@ const findShortestPath = async (
     };
   }
 
-  const { distances, previous } = bfs(from, { types, maxDepth });
+  const { distances, previous } = bfs(language, from, { types, maxDepth });
   if (!distances.has(to)) return null;
 
   const path: string[] = [];
@@ -1233,11 +1387,11 @@ const normalizeNumber = (value: unknown, fallback: number, min: number, max: num
   return clamp(Math.round(parsed), min, max);
 };
 
-const normalizeLetterBank = (letterBank: unknown) => {
+const normalizeLetterBank = (letterBank: unknown, language: LanguageMode) => {
   if (!Array.isArray(letterBank)) return null;
 
   const normalized = letterBank
-    .map((ch) => normalizeGameChar(ch))
+    .map((ch) => normalizeRootChar(ch, language))
     .filter((value): value is string => Boolean(value));
 
   return normalized.length > 0 ? [...new Set(normalized)] : null;
@@ -1265,6 +1419,7 @@ const serializeSession = (session: InternalSession, now = getNow()): SessionSnap
   return {
     id: session.id,
     mode: session.mode,
+    language: session.language,
     status: session.status,
     reason: session.reason,
     currentRoot: session.currentRoot,
@@ -1298,6 +1453,7 @@ const serializeSession = (session: InternalSession, now = getNow()): SessionSnap
 
 const createSession = ({
   mode,
+  language,
   startRoot,
   targetRoot,
   types,
@@ -1308,6 +1464,7 @@ const createSession = ({
   bonusWindowMs,
 }: {
   mode: unknown;
+  language: LanguageMode;
   startRoot: string;
   targetRoot: string | null;
   types: unknown;
@@ -1325,6 +1482,7 @@ const createSession = ({
   const session: InternalSession = {
     id: createOpaqueId('session'),
     mode: normalizeSessionMode(mode),
+    language,
     status: 'active',
     reason: null,
     createdAtMs: now,
@@ -1339,7 +1497,7 @@ const createSession = ({
     visited: new Set([startRoot]),
     allowRevisit: Boolean(allowRevisit),
     types: normalizeMoveTypes(types),
-    letterBank: normalizeLetterBank(letterBank),
+    letterBank: normalizeLetterBank(letterBank, language),
     turnStartedAtMs: now,
     countdownRemainingMs: safeCountdown,
     config: {
@@ -1405,11 +1563,18 @@ const applyValidMove = (session: InternalSession, nextRoot: string, moveEdge: Ne
   };
 };
 
-const parseBodyRoot = (value: unknown) => parseRootInput(value, DEFAULT_ROOT_LENGTH);
+const parseBodyRoot = (value: unknown, language: LanguageMode) =>
+  parseRootInput(value, language, DEFAULT_ROOT_LENGTH);
 
-const parseVisitedRoots = (visited: unknown) => {
+const parseVisitedRoots = (visited: unknown, language: LanguageMode) => {
   if (!Array.isArray(visited)) return [];
-  return [...new Set(visited.map((value) => parseBodyRoot(value)).filter((value): value is string => Boolean(value)))];
+  return [
+    ...new Set(
+      visited
+        .map((value) => parseBodyRoot(value, language))
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
 };
 
 const formatNeighborPayload = (root: string, neighborEdges: NeighborEdge[]) => ({
@@ -1434,7 +1599,7 @@ const serializeSessionWithBoard = (
 });
 
 const getNeighborOptionsForSession = (session: InternalSession, limit = 500) =>
-  getNeighbors(session.currentRoot, {
+  getNeighbors(session.language, session.currentRoot, {
     types: session.types,
     limit,
     excludeVisited: !session.allowRevisit,
@@ -1443,7 +1608,7 @@ const getNeighborOptionsForSession = (session: InternalSession, limit = 500) =>
   });
 
 const getNeighborOptionsForRoom = (room: InternalRoom, limit = 500) =>
-  getNeighbors(room.currentRoot, {
+  getNeighbors(room.language, room.currentRoot, {
     types: room.types,
     limit,
     excludeVisited: !room.allowRevisit,
@@ -1486,6 +1651,7 @@ const serializeRoomPayload = async (
     room: {
       id: room.id,
       code: room.code,
+      language: room.language,
       version: room.version,
       status: room.status,
       phase: room.phase,
@@ -1519,9 +1685,13 @@ const parseMs = (value: unknown, fallback: number) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
-const pickRandomDifferentRoot = async (root: string, maxAttempts = 20) => {
+const pickRandomDifferentRoot = async (
+  language: LanguageMode,
+  root: string,
+  maxAttempts = 20,
+) => {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const candidate = await pickRandomRoot({ length: DEFAULT_ROOT_LENGTH, minDegree: 0 });
+    const candidate = await pickRandomRoot(language, { length: DEFAULT_ROOT_LENGTH, minDegree: 0 });
     if (!candidate) return null;
     if (candidate.plain !== root) return candidate;
   }
@@ -1530,21 +1700,23 @@ const pickRandomDifferentRoot = async (root: string, maxAttempts = 20) => {
 };
 
 const selectPlayableStartRoot = async ({
+  language,
   requestedRoot,
   types,
   allowRevisit,
   letterBank,
 }: {
+  language: LanguageMode;
   requestedRoot: string | null;
   types: unknown;
   allowRevisit: boolean;
   letterBank: string[] | null;
 }) => {
   if (requestedRoot) {
-    const exists = await rootExists(requestedRoot);
+    const exists = await rootExists(requestedRoot, language);
     if (!exists) return { error: 'start_root_not_found' };
 
-    const sampleNeighbors = await getNeighbors(requestedRoot, {
+    const sampleNeighbors = await getNeighbors(language, requestedRoot, {
       types,
       limit: 1,
       excludeVisited: !allowRevisit,
@@ -1557,10 +1729,10 @@ const selectPlayableStartRoot = async ({
   }
 
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    const candidate = await pickRandomRoot({ length: DEFAULT_ROOT_LENGTH, minDegree: 1 });
+    const candidate = await pickRandomRoot(language, { length: DEFAULT_ROOT_LENGTH, minDegree: 1 });
     if (!candidate) break;
 
-    const sampleNeighbors = await getNeighbors(candidate.plain, {
+    const sampleNeighbors = await getNeighbors(language, candidate.plain, {
       types,
       limit: 1,
       excludeVisited: !allowRevisit,
@@ -1596,34 +1768,43 @@ const normalizeSuggestionStatus = (value: unknown): RootSuggestionStatus | 'all'
 
 const handleHealth = async () => ({
   ok: true,
-  roots: await countRoots(),
+  roots: await countRoots(DEFAULT_LANGUAGE_MODE),
+  rootsByLanguage: {
+    hebrew: await countRoots('hebrew'),
+    arabic: await countRoots('arabic'),
+  },
   pendingSuggestions: (localSuggestions ?? []).filter((suggestion) => suggestion.status === 'pending').length,
   activeRooms: ensureLocalRoomState().size,
   storageBackend: canUseLocalStorage() ? 'local-storage' : 'browser-memory',
   ts: getNow(),
 });
 
-const handleListRootSuggestions = async (statusValue: unknown) => {
+const handleListRootSuggestions = async (statusValue: unknown, languageValue?: unknown) => {
   loadLocalSuggestionState();
   const status = normalizeSuggestionStatus(statusValue);
+  const language = languageValue ? normalizeLanguageMode(languageValue) : null;
   const suggestions =
     status === 'all'
       ? [...(localSuggestions ?? [])]
       : (localSuggestions ?? []).filter((suggestion) => suggestion.status === status);
-  return { suggestions };
+  return {
+    suggestions: language ? suggestions.filter((suggestion) => suggestion.language === language) : suggestions,
+  };
 };
 
 const handleCreateRootSuggestion = async (body: Record<string, unknown>) => {
   loadLocalSuggestionState();
+  const language = normalizeLanguageMode(body.language);
 
-  const root = expectValue(parseBodyRoot(body.root), 400, { error: 'root_is_required' });
+  const root = expectValue(parseBodyRoot(body.root, language), 400, { error: 'root_is_required' });
 
-  if (await rootExists(root)) {
+  if (await rootExists(root, language)) {
     fail(409, { error: 'root_already_exists', root });
   }
 
   const duplicate = (localSuggestions ?? []).find(
     (suggestion) =>
+      suggestion.language === language &&
       suggestion.root === root &&
       (suggestion.status === 'pending' || suggestion.status === 'approved'),
   );
@@ -1641,6 +1822,7 @@ const handleCreateRootSuggestion = async (body: Record<string, unknown>) => {
       typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
         : `suggestion-${Math.random().toString(36).slice(2, 10)}`,
+    language,
     root,
     status: 'pending',
     note: typeof body.note === 'string' ? body.note : null,
@@ -1669,9 +1851,16 @@ const handleReviewRootSuggestion = async (suggestionId: string, body: Record<str
   );
 
   const now = getNow();
-  if (decision === 'approve' && !(await rootExists(suggestion.root))) {
-    addRootToStore(suggestion.root);
-    localApprovedRoots = [...new Set([...(localApprovedRoots ?? []), suggestion.root])].sort();
+  if (decision === 'approve' && !(await rootExists(suggestion.root, suggestion.language))) {
+    addRootToStore(suggestion.root, suggestion.language);
+    localApprovedRootsByLanguage = localApprovedRootsByLanguage ?? createEmptyApprovedRootsByLanguage();
+    localApprovedRootsByLanguage[suggestion.language] = [
+      ...new Set([...(localApprovedRootsByLanguage[suggestion.language] ?? []), suggestion.root]),
+    ].sort((left, right) =>
+      suggestion.language === 'arabic'
+        ? left.localeCompare(right, 'ar')
+        : left.localeCompare(right),
+    );
   }
 
   const reviewed = serializeSuggestion({
@@ -1690,17 +1879,18 @@ const handleReviewRootSuggestion = async (suggestionId: string, body: Record<str
 };
 
 const handleGetNextOptions = async (body: Record<string, unknown>) => {
-  const safeRoot = expectValue(parseBodyRoot(body.root), 400, { error: 'root is required' });
+  const language = normalizeLanguageMode(body.language);
+  const safeRoot = expectValue(parseBodyRoot(body.root, language), 400, { error: 'root is required' });
 
-  const exists = await rootExists(safeRoot);
+  const exists = await rootExists(safeRoot, language);
   if (!exists) fail(404, { error: 'root_not_found', root: safeRoot });
 
   const types = normalizeMoveTypes(body.types);
-  const visited = parseVisitedRoots(body.visited);
+  const visited = parseVisitedRoots(body.visited, language);
   const excludeVisited = Boolean(body.exclude_visited ?? body.excludeVisited ?? false);
-  const letterBank = normalizeLetterBank(body.letter_bank ?? body.letterBank);
+  const letterBank = normalizeLetterBank(body.letter_bank ?? body.letterBank, language);
   const limit = Math.min(Math.max(Number(body.limit) || 500, 1), 5000);
-  const edges = await getNeighbors(safeRoot, {
+  const edges = await getNeighbors(language, safeRoot, {
     types,
     limit,
     excludeVisited,
@@ -1845,7 +2035,9 @@ const handleRoomMove = async (roomCode: string, body: Record<string, unknown>) =
     );
   }
 
-  const candidateRoot = expectValue(parseBodyRoot(body.root), 400, { error: 'root is required' });
+  const candidateRoot = expectValue(parseBodyRoot(body.root, room.language), 400, {
+    error: 'root is required',
+  });
 
   if (room.controllerPlayerId && room.controllerPlayerId !== player.id) {
     await failRoomMove({
@@ -1889,7 +2081,7 @@ const handleRoomMove = async (roomCode: string, body: Record<string, unknown>) =
     });
   }
 
-  const moveEdge = await getDirectMove(room.currentRoot, candidateRoot, {
+  const moveEdge = await getDirectMove(room.language, room.currentRoot, candidateRoot, {
     types: room.types,
     letterBank: room.letterBank,
   });
@@ -1973,12 +2165,14 @@ const handleRoomMove = async (roomCode: string, body: Record<string, unknown>) =
 };
 
 const handleCreateRoom = async (body: Record<string, unknown>) => {
+  const language = normalizeLanguageMode(body.language);
   const types = normalizeMoveTypes(body.types ?? body.allowedTypes);
   const allowRevisit = Boolean(body.allow_revisit ?? body.allowRevisit ?? false);
-  const letterBank = normalizeLetterBank(body.letter_bank ?? body.letterBank);
+  const letterBank = normalizeLetterBank(body.letter_bank ?? body.letterBank, language);
   const optionsLimit = Math.min(Math.max(Number(body.optionsLimit) || 500, 1), 5000);
-  const requestedRoot = parseBodyRoot(body.startRoot ?? body.root);
+  const requestedRoot = parseBodyRoot(body.startRoot ?? body.root, language);
   const startSelection = await selectPlayableStartRoot({
+    language,
     requestedRoot,
     types,
     allowRevisit,
@@ -1998,6 +2192,7 @@ const handleCreateRoom = async (body: Record<string, unknown>) => {
   const room: InternalRoom = {
     id: createOpaqueId('room'),
     code: generateUniqueRoomCode(),
+    language,
     version: 1,
     status: 'active',
     phase: 'open_claim',
@@ -2094,14 +2289,16 @@ const handleRoomState = async (roomCode: string, playerToken: unknown) => {
 };
 
 const handleStartSession = async (body: Record<string, unknown>) => {
+  const language = normalizeLanguageMode(body.language);
   const mode = normalizeSessionMode(body.mode);
   const types = normalizeMoveTypes(body.types ?? body.allowedTypes);
   const allowRevisit = Boolean(body.allow_revisit ?? body.allowRevisit ?? false);
-  const letterBank = normalizeLetterBank(body.letter_bank ?? body.letterBank);
+  const letterBank = normalizeLetterBank(body.letter_bank ?? body.letterBank, language);
   const optionsLimit = Math.min(Math.max(Number(body.optionsLimit) || 500, 1), 5000);
 
-  const requestedRoot = parseBodyRoot(body.startRoot ?? body.root);
+  const requestedRoot = parseBodyRoot(body.startRoot ?? body.root, language);
   const startSelection = await selectPlayableStartRoot({
+    language,
     requestedRoot,
     types,
     allowRevisit,
@@ -2115,18 +2312,18 @@ const handleStartSession = async (body: Record<string, unknown>) => {
     500,
     { error: 'start_root_resolution_failed' },
   );
-  let targetRoot = parseBodyRoot(body.targetRoot);
+  let targetRoot = parseBodyRoot(body.targetRoot, language);
 
   if (mode === 'journey') {
     if (targetRoot) {
-      const exists = await rootExists(targetRoot);
+      const exists = await rootExists(targetRoot, language);
       if (!exists) fail(400, { error: 'target_root_not_found' });
       if (targetRoot === startRoot) {
         fail(400, { error: 'target_root_must_differ_from_start_root' });
       }
     } else {
-      const generated = await pickJourneyTarget(startRoot, { minDepth: 3, maxDepth: 10 });
-      targetRoot = generated?.plain || (await pickRandomDifferentRoot(startRoot))?.plain || null;
+      const generated = await pickJourneyTarget(language, startRoot, { minDepth: 3, maxDepth: 10 });
+      targetRoot = generated?.plain || (await pickRandomDifferentRoot(language, startRoot))?.plain || null;
     }
   } else {
     targetRoot = null;
@@ -2134,6 +2331,7 @@ const handleStartSession = async (body: Record<string, unknown>) => {
 
   const session = createSession({
     mode,
+    language,
     startRoot,
     targetRoot,
     types,
@@ -2174,7 +2372,9 @@ const handleMove = async (sessionId: string, body: Record<string, unknown>) => {
     );
   }
 
-  const candidateRoot = expectValue(parseBodyRoot(body.root), 400, { error: 'root is required' });
+  const candidateRoot = expectValue(parseBodyRoot(body.root, session.language), 400, {
+    error: 'root is required',
+  });
 
   if (candidateRoot === session.currentRoot) {
     applyInvalidMove(session, now);
@@ -2200,7 +2400,7 @@ const handleMove = async (sessionId: string, body: Record<string, unknown>) => {
     );
   }
 
-  const moveEdge = await getDirectMove(session.currentRoot, candidateRoot, {
+  const moveEdge = await getDirectMove(session.language, session.currentRoot, candidateRoot, {
     types: session.types,
     letterBank: session.letterBank,
   });
@@ -2248,13 +2448,14 @@ const handleMove = async (sessionId: string, body: Record<string, unknown>) => {
 };
 
 const handlePath = async (body: Record<string, unknown>) => {
+  const language = normalizeLanguageMode(body.language);
   const safeFrom = expectValue(
-    parseBodyRoot(body.fromRoot ?? body.from),
+    parseBodyRoot(body.fromRoot ?? body.from, language),
     400,
     { error: 'fromRoot and toRoot are required' },
   );
   const safeTo = expectValue(
-    parseBodyRoot(body.toRoot ?? body.to),
+    parseBodyRoot(body.toRoot ?? body.to, language),
     400,
     { error: 'fromRoot and toRoot are required' },
   );
@@ -2271,7 +2472,7 @@ const handlePath = async (body: Record<string, unknown>) => {
 
   const types = normalizeMoveTypes(body.types);
   const maxDepth = Math.min(Math.max(Number(body.maxDepth) || 12, 1), 25);
-  const path = await findShortestPath(safeFrom, safeTo, { maxDepth, types });
+  const path = await findShortestPath(language, safeFrom, safeTo, { maxDepth, types });
   if (!path) fail(404, { error: 'path_not_found', from: safeFrom, to: safeTo, maxDepth });
 
   return {
@@ -2299,17 +2500,19 @@ const requestRemoteJson = async <T,>(path: string, init?: RequestInit): Promise<
 };
 
 const requestLocalJson = async <T,>(path: string, init?: RequestInit): Promise<T> => {
-  initializeStore();
   const url = new URL(path, 'https://root-game.local');
   const method = (init?.method || 'GET').toUpperCase();
   const body = parseRequestBody(init);
 
-  if (url.pathname === '/health' && method === 'GET') {
+  if (url.pathname === '/api/health' && method === 'GET') {
     return (await handleHealth()) as T;
   }
 
   if (url.pathname === '/api/root-suggestions' && method === 'GET') {
-    return (await handleListRootSuggestions(url.searchParams.get('status'))) as T;
+    return (await handleListRootSuggestions(
+      url.searchParams.get('status'),
+      url.searchParams.get('language'),
+    )) as T;
   }
 
   if (url.pathname === '/api/root-suggestions' && method === 'POST') {

@@ -6,6 +6,7 @@ import LetterCard from './components/LetterCard';
 import StreakBubble from './components/StreakBubble';
 import StreakPulse from './components/StreakPulse';
 import { advanceApiTime, isApiError, requestJson, resetApiTime } from './game/apiClient';
+import { getLetterImageSrc } from './game/letterAssets';
 import {
   formatStreakTierRange,
   getNextStreakTier,
@@ -22,6 +23,7 @@ declare global {
 }
 
 type GameMode = 'journey' | 'survival';
+type LanguageMode = 'hebrew' | 'arabic';
 type PlayMode = GameMode | 'multiplayer';
 type SessionStatus = 'active' | 'game_over' | 'completed';
 type MoveType = 'REPLACE' | 'SWAP';
@@ -51,6 +53,7 @@ type NeighborEdge = {
 type SessionSnapshot = {
   id: string;
   mode: GameMode;
+  language: LanguageMode;
   status: SessionStatus;
   reason: string | null;
   currentRoot: string;
@@ -152,6 +155,7 @@ type RoomPlayerAuth = {
 type RoomSnapshot = {
   id: string;
   code: string;
+  language: LanguageMode;
   version: number;
   status: 'active' | 'completed';
   phase: 'open_claim' | 'controlled';
@@ -238,6 +242,7 @@ type RootSuggestionStatus = 'pending' | 'approved' | 'rejected';
 
 type RootSuggestion = {
   id: string;
+  language: LanguageMode;
   root: string;
   dottedRoot: string;
   status: RootSuggestionStatus;
@@ -261,10 +266,15 @@ type DragGestureState = {
   dragging: boolean;
 };
 
-type TransliterationPresetId = 'hebrew_native' | 'letter_clean' | 'legacy_symbols';
+type TransliterationPresetId =
+  | 'hebrew_native'
+  | 'letter_clean'
+  | 'legacy_symbols'
+  | 'arabic_native';
 
 type TransliterationPreset = {
   id: TransliterationPresetId;
+  language: LanguageMode;
   label: string;
   description: string;
   hebToGame: Record<string, string>;
@@ -273,7 +283,7 @@ type TransliterationPreset = {
   displayDir: 'rtl' | 'ltr';
 };
 
-type KeyboardLayoutMode = 'hebrew' | 'latin' | 'unknown';
+type KeyboardLayoutMode = LanguageMode | 'latin' | 'unknown';
 type KeyboardLayoutSource = 'layout_map' | 'recent_key' | 'unavailable';
 
 type KeyboardLayoutState = {
@@ -298,10 +308,12 @@ const DEFAULT_BONUS_WINDOW_MS = 8_000;
 const DEFAULT_CONTROL_WINDOW_MS = 8_000;
 const DEFAULT_MAX_CONTROL_MS = 12_000;
 const REEL_DRAG_THRESHOLD_PX = 12;
+const LANGUAGE_STORAGE_KEY = 'roots.languageMode.v1';
 const TRANSLITERATION_STORAGE_KEY = 'roots.transliterationPreset.v2';
 const STAGE_BACKGROUND_IMAGE = '/backgrounds/mosaic-overlay.png';
 const SLOT_LABELS = ['Right reel', 'Middle reel', 'Left reel'] as const;
 const HEBREW_CHAR_PATTERN = /[\u0590-\u05FF]/;
+const ARABIC_CHAR_PATTERN = /[\u0600-\u06FF]/;
 const KEYBOARD_LAYOUT_SAMPLE_CODES = ['KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyJ', 'KeyK', 'KeyL'] as const;
 const STAGE_SLOT_LAYOUT = [
   { left: 60.72, top: 24.52, width: 14.72, height: 42.72 },
@@ -332,6 +344,14 @@ const HEB_TO_GAME: Record<string, string> = {
   ר: 'r',
   ש: 'c',
   ת: 't',
+};
+
+const ARABIC_ROOT_CHAR_SET = new Set(
+  Array.from('ءآأؤإئابتثجحخدذرزسشصضطظعغفقكلمنهوي'),
+);
+const ARABIC_CHAR_NORMALIZATION: Record<string, string> = {
+  ٱ: 'ا',
+  ى: 'ي',
 };
 
 const isAsciiLetter = (ch: string) => /^[a-z]$/i.test(ch);
@@ -377,6 +397,7 @@ const GAME_TO_HEBREW: Record<string, string> = {
 const TRANSLITERATION_PRESETS: Record<TransliterationPresetId, TransliterationPreset> = {
   hebrew_native: {
     id: 'hebrew_native',
+    language: 'hebrew',
     label: 'Hebrew',
     description: 'Displays roots in Hebrew letters',
     hebToGame: HEB_TO_GAME,
@@ -386,6 +407,7 @@ const TRANSLITERATION_PRESETS: Record<TransliterationPresetId, TransliterationPr
   },
   letter_clean: {
     id: 'letter_clean',
+    language: 'hebrew',
     label: 'Letter Clean',
     description: 'A/B/J/D/E without symbols',
     hebToGame: HEB_TO_GAME,
@@ -395,6 +417,7 @@ const TRANSLITERATION_PRESETS: Record<TransliterationPresetId, TransliterationPr
   },
   legacy_symbols: {
     id: 'legacy_symbols',
+    language: 'hebrew',
     label: 'Legacy Symbols',
     description: 'Old *, &, @, % display and key aliases',
     hebToGame: HEB_TO_GAME,
@@ -402,10 +425,52 @@ const TRANSLITERATION_PRESETS: Record<TransliterationPresetId, TransliterationPr
     inputAliases: LEGACY_SYMBOL_TO_GAME,
     displayDir: 'ltr',
   },
+  arabic_native: {
+    id: 'arabic_native',
+    language: 'arabic',
+    label: 'Arabic',
+    description: 'Displays roots in Arabic letters',
+    hebToGame: {},
+    canonicalToDisplay: {},
+    inputAliases: {},
+    displayDir: 'rtl',
+  },
 };
 
 const isTransliterationPresetId = (value: string): value is TransliterationPresetId =>
   value in TRANSLITERATION_PRESETS;
+
+const isLanguageMode = (value: string): value is LanguageMode => value === 'hebrew' || value === 'arabic';
+
+const DEFAULT_PRESET_BY_LANGUAGE: Record<LanguageMode, TransliterationPresetId> = {
+  hebrew: 'hebrew_native',
+  arabic: 'arabic_native',
+};
+
+const LANGUAGE_LABELS: Record<LanguageMode, string> = {
+  hebrew: 'Hebrew',
+  arabic: 'Arabic',
+};
+
+const LANGUAGE_NATIVE_LABELS: Record<LanguageMode, string> = {
+  hebrew: 'עברית',
+  arabic: 'العربية',
+};
+
+const LANGUAGE_DESCRIPTIONS: Record<LanguageMode, string> = {
+  hebrew: 'Hebrew roots with Hebrew script and transliteration support.',
+  arabic: 'Arabic roots with Arabic script input and keyboard hints.',
+};
+
+const LANGUAGE_SAMPLE_ROOTS: Record<LanguageMode, string> = {
+  hebrew: 'ברק',
+  arabic: 'كتب',
+};
+
+const LANGUAGE_SAMPLE_DOTTED: Record<LanguageMode, string> = {
+  hebrew: 'ב.ר.ק',
+  arabic: 'ك.ت.ب',
+};
 
 const formatSeconds = (ms: number) => `${(ms / 1000).toFixed(ms % 1000 === 0 ? 0 : 1)}s`;
 
@@ -560,24 +625,19 @@ const getComboBurstAnchor = (slotIndexes: number[]) => {
 };
 
 const toDisplayChar = (ch: string, preset: TransliterationPreset) => {
-  const lower = (ch || '').toLowerCase();
-  const aliased = preset.canonicalToDisplay[lower];
+  const canonical = preset.language === 'hebrew' ? (ch || '').toLowerCase() : ch || '';
+  const aliased = preset.canonicalToDisplay[canonical];
   if (aliased) return isAsciiLetter(aliased) ? aliased.toUpperCase() : aliased;
-  return isAsciiLetter(lower) ? lower.toUpperCase() : ch;
+  return preset.language === 'hebrew' && isAsciiLetter(canonical) ? canonical.toUpperCase() : ch;
 };
 
 const toDisplayDotted = (letters: string[], preset: TransliterationPreset) =>
   letters.map((letter) => toDisplayChar(letter, preset)).join('.');
 
 const formatDisplayRoot = (plainRoot: string, preset: TransliterationPreset) =>
-  toDisplayDotted((plainRoot || '').split(''), preset);
+  toDisplayDotted(Array.from(plainRoot || ''), preset);
 
-const imgForChar = (ch: string): string | null => {
-  const lower = (ch || '').toLowerCase();
-  return /^[a-z]$/.test(lower) ? `/letters/${lower}.png` : null;
-};
-
-const normalizeGameChar = (key: string, inputAliases: Record<string, string>): string | null => {
+const normalizeLatinGameChar = (key: string, inputAliases: Record<string, string>): string | null => {
   if (!key || key.length !== 1) return null;
   const normalized = key.toLowerCase();
   if (inputAliases[normalized]) return inputAliases[normalized];
@@ -585,9 +645,16 @@ const normalizeGameChar = (key: string, inputAliases: Record<string, string>): s
   return null;
 };
 
+const normalizeArabicGameChar = (key: string): string | null => {
+  if (!key || key.length !== 1) return null;
+  const normalized = ARABIC_CHAR_NORMALIZATION[key] ?? key;
+  return ARABIC_ROOT_CHAR_SET.has(normalized) ? normalized : null;
+};
+
 const inferKeyboardLayoutMode = (value: string): KeyboardLayoutMode => {
   if (!value) return 'unknown';
   if (HEBREW_CHAR_PATTERN.test(value)) return 'hebrew';
+  if (ARABIC_CHAR_PATTERN.test(value)) return 'arabic';
   if (Array.from(value).some((char) => isAsciiLetter(char))) return 'latin';
   return 'unknown';
 };
@@ -604,16 +671,19 @@ const pickKeyboardLayoutSample = (layoutMap: KeyboardLayoutMapLike): string | nu
 
   return (
     samples.find((value) => inferKeyboardLayoutMode(value) === 'hebrew') ??
+    samples.find((value) => inferKeyboardLayoutMode(value) === 'arabic') ??
     samples.find((value) => inferKeyboardLayoutMode(value) === 'latin') ??
     samples[0] ??
     null
   );
 };
 
-const getKeyboardSwitchGuide = () => {
+const getKeyboardSwitchGuide = (language: LanguageMode) => {
+  const targetLabel = LANGUAGE_LABELS[language];
+
   if (typeof navigator === 'undefined') {
     return {
-      hint: 'Switch your device keyboard to Hebrew',
+      hint: `Switch your device keyboard to ${targetLabel}`,
     };
   }
 
@@ -629,29 +699,38 @@ const getKeyboardSwitchGuide = () => {
 
   if (/iphone|ipad|ipod|ios|android/.test(platformFingerprint)) {
     return {
-      hint: 'Tap the globe key, then choose Hebrew',
+      hint: `Tap the globe key, then choose ${targetLabel}`,
     };
   }
 
   if (/mac/.test(platformFingerprint)) {
     return {
-      hint: 'Press Control + Space for Hebrew',
+      hint: `Press Control + Space for ${targetLabel}`,
     };
   }
 
   if (/win/.test(platformFingerprint)) {
     return {
-      hint: 'Press Win + Space for Hebrew',
+      hint: `Press Win + Space for ${targetLabel}`,
     };
   }
 
   return {
-    hint: 'Use your system shortcut for Hebrew',
+    hint: `Use your system shortcut for ${targetLabel}`,
   };
 };
 
-const mapKeyToGameChar = (key: string, preset: TransliterationPreset): string | null =>
-  preset.hebToGame[key] ?? normalizeGameChar(key, preset.inputAliases);
+const mapKeyToGameChar = (
+  key: string,
+  language: LanguageMode,
+  preset: TransliterationPreset,
+): string | null => {
+  if (language === 'arabic') {
+    return normalizeArabicGameChar(key);
+  }
+
+  return preset.hebToGame[key] ?? normalizeLatinGameChar(key, preset.inputAliases);
+};
 
 const formatReason = (reason: string | null | undefined): string => {
   if (!reason) return '';
@@ -690,6 +769,7 @@ export default function App() {
   const [dragSourceIdx, setDragSourceIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
   const [showDebug, setShowDebug] = useState(false);
+  const [languageMode, setLanguageMode] = useState<LanguageMode>('hebrew');
   const [transliterationPresetId, setTransliterationPresetId] =
     useState<TransliterationPresetId>('hebrew_native');
 
@@ -768,6 +848,7 @@ export default function App() {
       return {
         id: room.id,
         mode: 'survival',
+        language: room.language,
         status: room.status === 'active' ? 'active' : 'completed',
         reason: room.reason,
         currentRoot: room.currentRoot,
@@ -811,13 +892,19 @@ export default function App() {
       activeSession.status === 'active' &&
       (!room || room.phase === 'open_claim' || roomIsControlledBySelf),
   );
+  const activeLanguageMode = activeSession?.language ?? languageMode;
+  const activeLanguageNativeLabel = LANGUAGE_NATIVE_LABELS[activeLanguageMode];
   const committedPlain = activeSession?.currentRoot || letters.join('');
+  const resolvedPresetId =
+    TRANSLITERATION_PRESETS[transliterationPresetId]?.language === activeLanguageMode
+      ? transliterationPresetId
+      : DEFAULT_PRESET_BY_LANGUAGE[activeLanguageMode];
   const activeTransliteration = useMemo(
-    () => TRANSLITERATION_PRESETS[transliterationPresetId],
-    [transliterationPresetId],
+    () => TRANSLITERATION_PRESETS[resolvedPresetId],
+    [resolvedPresetId],
   );
   const activeDisplayDir = activeTransliteration.displayDir;
-  const committedLetters = useMemo(() => committedPlain.split(''), [committedPlain]);
+  const committedLetters = useMemo(() => Array.from(committedPlain), [committedPlain]);
   const committedDotted = useMemo(
     () => toDisplayDotted(committedLetters, activeTransliteration),
     [activeTransliteration, committedLetters],
@@ -872,6 +959,7 @@ export default function App() {
 
     return {
       sessionId: session.id,
+      language: session.language,
       fromRoot: journeyStartRoot,
       toRoot: session.targetRoot,
       types: session.types,
@@ -928,38 +1016,48 @@ export default function App() {
 
     return null;
   }, [attemptFlash, attemptFlashVisible, bonusFlash, bonusFlashVisible]);
-  const keyboardSwitchGuide = useMemo(() => getKeyboardSwitchGuide(), []);
+  const keyboardSwitchGuide = useMemo(
+    () => getKeyboardSwitchGuide(activeLanguageMode),
+    [activeLanguageMode],
+  );
   const keyboardIndicatorLabel =
-    keyboardLayout.mode === 'hebrew' ? 'עברית' : keyboardLayout.mode === 'latin' ? 'ABC' : 'Detect';
-  const keyboardIndicatorStatusLabel =
     keyboardLayout.mode === 'hebrew'
-      ? 'Hebrew Ready'
-      : keyboardLayout.mode === 'latin'
-        ? 'Switch to Hebrew'
+      ? 'עברית'
+      : keyboardLayout.mode === 'arabic'
+        ? 'العربية'
+        : keyboardLayout.mode === 'latin'
+          ? 'ABC'
+          : 'Detect';
+  const keyboardIndicatorStatusLabel =
+    keyboardLayout.mode === activeLanguageMode
+      ? `${LANGUAGE_LABELS[activeLanguageMode]} Ready`
+      : keyboardLayout.mode === 'latin' || keyboardLayout.mode === 'hebrew' || keyboardLayout.mode === 'arabic'
+        ? `Switch to ${LANGUAGE_LABELS[activeLanguageMode]}`
         : 'Check Keyboard';
   const keyboardIndicatorHint =
-    keyboardLayout.mode === 'hebrew'
-      ? 'Hebrew keyboard ready'
+    keyboardLayout.mode === activeLanguageMode
+      ? `${LANGUAGE_LABELS[activeLanguageMode]} keyboard ready`
       : keyboardSwitchGuide.hint;
   const keyboardIndicatorToneClass =
-    keyboardLayout.mode === 'hebrew'
+    keyboardLayout.mode === activeLanguageMode
       ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-      : keyboardLayout.mode === 'latin'
+      : keyboardLayout.mode === 'latin' || keyboardLayout.mode === 'hebrew' || keyboardLayout.mode === 'arabic'
         ? 'border-rose-200 bg-rose-50 text-rose-700'
         : 'border-slate-200 bg-white text-slate-600';
   const keyboardIndicatorShellClass =
-    keyboardLayout.mode === 'hebrew'
+    keyboardLayout.mode === activeLanguageMode
       ? 'border-emerald-200/90 bg-[linear-gradient(135deg,rgba(240,253,244,0.96)_0%,rgba(220,252,231,0.94)_100%)] text-emerald-900 shadow-[0_18px_36px_-28px_rgba(22,163,74,0.5)]'
-      : keyboardLayout.mode === 'latin'
+      : keyboardLayout.mode === 'latin' || keyboardLayout.mode === 'hebrew' || keyboardLayout.mode === 'arabic'
         ? 'border-rose-300/95 bg-[linear-gradient(135deg,rgba(255,241,242,0.98)_0%,rgba(255,237,213,0.96)_100%)] text-rose-900 shadow-[0_22px_46px_-26px_rgba(225,29,72,0.52)] motion-safe:animate-[pulse_2.2s_ease-in-out_infinite]'
         : 'border-amber-200/90 bg-[linear-gradient(135deg,rgba(255,251,235,0.98)_0%,rgba(254,243,199,0.95)_100%)] text-amber-950 shadow-[0_18px_36px_-28px_rgba(217,119,6,0.4)]';
   const keyboardIndicatorDotClass =
-    keyboardLayout.mode === 'hebrew'
+    keyboardLayout.mode === activeLanguageMode
       ? 'bg-emerald-500 shadow-[0_0_0_6px_rgba(16,185,129,0.18)]'
-      : keyboardLayout.mode === 'latin'
+      : keyboardLayout.mode === 'latin' || keyboardLayout.mode === 'hebrew' || keyboardLayout.mode === 'arabic'
         ? 'bg-rose-500 shadow-[0_0_0_7px_rgba(244,63,94,0.2)]'
         : 'bg-amber-500 shadow-[0_0_0_6px_rgba(245,158,11,0.18)]';
-  const keyboardIndicatorDir = keyboardLayout.mode === 'hebrew' ? 'rtl' : 'ltr';
+  const keyboardIndicatorDir =
+    keyboardLayout.mode === 'hebrew' || keyboardLayout.mode === 'arabic' ? 'rtl' : 'ltr';
   const pendingSuggestionsCount = rootSuggestions.filter(
     (suggestion) => suggestion.status === 'pending',
   ).length;
@@ -1119,6 +1217,7 @@ export default function App() {
     },
   ) => {
     setSession(payload.session);
+    setLanguageMode(payload.session.language);
     sessionIdRef.current = payload.session.id;
     setNeighborEdges(payload.options.edges);
     setNeighborsSet(new Set(payload.options.neighbors));
@@ -1128,7 +1227,7 @@ export default function App() {
     const shouldPreserveSelection = Boolean(options.preserveSelection) && payload.session.status === 'active';
 
     if (options.syncLetters) {
-      setLetters(payload.session.currentRoot.split(''));
+      setLetters(Array.from(payload.session.currentRoot));
 
       if (!shouldPreserveSelection) {
         clearSelection();
@@ -1148,6 +1247,7 @@ export default function App() {
     },
   ) => {
     setRoom(payload.room);
+    setLanguageMode(payload.room.language);
     setRoomPlayer(payload.player);
     roomCodeRef.current = payload.room.code;
     setNeighborEdges(payload.room.options.edges);
@@ -1158,7 +1258,7 @@ export default function App() {
     const shouldPreserveSelection = Boolean(options.preserveSelection) && payload.room.status === 'active';
 
     if (options.syncLetters) {
-      setLetters(payload.room.currentRoot.split(''));
+      setLetters(Array.from(payload.room.currentRoot));
 
       if (!shouldPreserveSelection) {
         clearSelection();
@@ -1196,9 +1296,36 @@ export default function App() {
     clearSelection,
   ]);
 
+  const changeLanguageMode = useCallback(
+    (nextLanguage: LanguageMode) => {
+      if (nextLanguage === activeLanguageMode && !session && !room) return;
+
+      resetGameplayUi();
+      setSession(null);
+      sessionIdRef.current = null;
+      setRoom(null);
+      roomCodeRef.current = null;
+      setRoomPlayer(null);
+      setNeighborsSet(new Set());
+      setNeighborEdges([]);
+      setLetters(['', '', '']);
+      setVisitedRoots([]);
+      setRootSuggestions([]);
+      setShowSuggestionPanel(false);
+      setSuggestionFeedback(null);
+      setSuggestedRootInput('');
+      setSuggestionNoteInput('');
+      setStartRootInput('');
+      setTargetRootInput('');
+      setLanguageMode(nextLanguage);
+      setTransliterationPresetId(DEFAULT_PRESET_BY_LANGUAGE[nextLanguage]);
+    },
+    [activeLanguageMode, resetGameplayUi, room, session],
+  );
+
   const checkBackendHealth = useCallback(async () => {
     try {
-      await requestJson<{ ok: boolean }>('/health');
+      await requestJson<{ ok: boolean }>('/api/health');
       setServerHealthy(true);
       setErrorText('');
     } catch (error: unknown) {
@@ -1215,7 +1342,9 @@ export default function App() {
     setLoadingSuggestions(true);
 
     try {
-      const payload = await requestJson<{ suggestions: RootSuggestion[] }>('/api/root-suggestions');
+      const payload = await requestJson<{ suggestions: RootSuggestion[] }>(
+        `/api/root-suggestions?language=${encodeURIComponent(activeLanguageMode)}`,
+      );
       setRootSuggestions(payload.suggestions);
     } catch (error: unknown) {
       if (isApiError(error)) {
@@ -1226,7 +1355,7 @@ export default function App() {
     } finally {
       setLoadingSuggestions(false);
     }
-  }, []);
+  }, [activeLanguageMode]);
 
   const submitRootSuggestion = useCallback(async () => {
     setSubmittingSuggestion(true);
@@ -1236,6 +1365,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          language: activeLanguageMode,
           root: suggestedRootInput,
           note: suggestionNoteInput,
         }),
@@ -1255,7 +1385,7 @@ export default function App() {
     } finally {
       setSubmittingSuggestion(false);
     }
-  }, [loadRootSuggestions, suggestedRootInput, suggestionNoteInput]);
+  }, [activeLanguageMode, loadRootSuggestions, suggestedRootInput, suggestionNoteInput]);
 
   const reviewRootSuggestionDecision = useCallback(
     async (suggestionId: string, decision: 'approve' | 'reject') => {
@@ -1298,6 +1428,7 @@ export default function App() {
     roomCodeRef.current = null;
 
     const body: Record<string, unknown> = {
+      language: activeLanguageMode,
       mode: mode === 'journey' ? 'journey' : 'survival',
       types: DEFAULT_TYPES,
       allowRevisit: false,
@@ -1341,6 +1472,7 @@ export default function App() {
       setLoadingSession(false);
     }
   }, [
+    activeLanguageMode,
     applyPayload,
     bonusBaseMs,
     bonusWindowMs,
@@ -1358,6 +1490,7 @@ export default function App() {
     sessionIdRef.current = null;
 
     const body: Record<string, unknown> = {
+      language: activeLanguageMode,
       playerName: roomPlayerNameInput.trim() || 'Host',
       types: DEFAULT_TYPES,
       allowRevisit: false,
@@ -1397,6 +1530,7 @@ export default function App() {
       setLoadingRoom(false);
     }
   }, [
+    activeLanguageMode,
     applyRoomPayload,
     bonusBaseMs,
     bonusWindowMs,
@@ -1593,7 +1727,7 @@ export default function App() {
             if (payload.move?.reason === 'not_a_valid_neighbor') {
               const streakTierBeforeReset =
                 streakBeforeMove > 0 ? getStreakTier(streakBeforeMove) : null;
-              setLetters(payload.session.currentRoot.split(''));
+              setLetters(Array.from(payload.session.currentRoot));
               setInfoText('');
               setErrorText('');
               clearFlashTimers();
@@ -1616,7 +1750,7 @@ export default function App() {
             if (payload.move?.reason === 'already_visited') {
               const streakTierBeforeReset =
                 streakBeforeMove > 0 ? getStreakTier(streakBeforeMove) : null;
-              setLetters(payload.session.currentRoot.split(''));
+              setLetters(Array.from(payload.session.currentRoot));
               setInfoText('');
               setErrorText('');
               clearFlashTimers();
@@ -1754,7 +1888,7 @@ export default function App() {
             applyRoomPayload(payload, { syncLetters: false });
 
             if (payload.move?.reason === 'control_locked') {
-              setLetters(payload.room.currentRoot.split(''));
+              setLetters(Array.from(payload.room.currentRoot));
               clearFlashTimers();
               setBonusFlash(null);
               setBonusFlashVisible(false);
@@ -1774,7 +1908,7 @@ export default function App() {
             ) {
               const streakTierBeforeReset =
                 streakBeforeMove > 0 ? getStreakTier(streakBeforeMove) : null;
-              setLetters(payload.room.currentRoot.split(''));
+              setLetters(Array.from(payload.room.currentRoot));
               setInfoText('');
               setErrorText('');
               clearFlashTimers();
@@ -2009,7 +2143,7 @@ export default function App() {
       const nextKey = Array.from(rawValue).at(-1);
       if (!nextKey) return;
 
-      const mapped = mapKeyToGameChar(nextKey, activeTransliteration);
+      const mapped = mapKeyToGameChar(nextKey, activeLanguageMode, activeTransliteration);
       if (!mapped) return;
 
       clearDragState();
@@ -2019,7 +2153,7 @@ export default function App() {
         return next;
       });
     },
-    [activeSession, activeTransliteration, canInteractWithBoard, clearDragState, selectedIdx],
+    [activeLanguageMode, activeSession, activeTransliteration, canInteractWithBoard, clearDragState, selectedIdx],
   );
 
   useEffect(() => {
@@ -2050,11 +2184,24 @@ export default function App() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    const savedLanguage = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    if (savedLanguage && isLanguageMode(savedLanguage)) {
+      setLanguageMode(savedLanguage);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
     const savedPresetId = window.localStorage.getItem(TRANSLITERATION_STORAGE_KEY);
     if (savedPresetId && isTransliterationPresetId(savedPresetId)) {
       setTransliterationPresetId(savedPresetId);
     }
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, activeLanguageMode);
+  }, [activeLanguageMode]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -2118,6 +2265,7 @@ export default function App() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        language: journeySolutionRequest.language,
         fromRoot: journeySolutionRequest.fromRoot,
         toRoot: journeySolutionRequest.toRoot,
         maxDepth: 25,
@@ -2184,7 +2332,7 @@ export default function App() {
 
       if (selectedIdx === null) return;
 
-      const mapped = mapKeyToGameChar(event.key, activeTransliteration);
+      const mapped = mapKeyToGameChar(event.key, activeLanguageMode, activeTransliteration);
       if (mapped) {
         event.preventDefault();
         clearDragState();
@@ -2211,6 +2359,7 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
+    activeLanguageMode,
     activeSession,
     activeTransliteration,
     clearSelection,
@@ -2344,6 +2493,7 @@ export default function App() {
             }
           : null,
         ui: {
+          language: activeLanguageMode,
           debugVisible: showDebug,
           transliterationPreset: activeTransliteration.id,
           suggestionPanelOpen: showSuggestionPanel,
@@ -2354,7 +2504,7 @@ export default function App() {
             mode: keyboardLayout.mode,
             source: keyboardLayout.source,
             sample: keyboardLayout.sample,
-            expected: 'hebrew',
+            expected: activeLanguageMode,
           },
           keyboardSwitchHint: keyboardSwitchGuide.hint,
           loadingSession,
@@ -2401,6 +2551,7 @@ export default function App() {
     dragSourceIdx,
     selectedIdx,
     selectedSlotLabel,
+    activeLanguageMode,
     activeSession,
     streakTier,
     nextStreakTier,
@@ -2455,10 +2606,10 @@ export default function App() {
         : mode === 'multiplayer' && room?.phase === 'open_claim'
           ? 'Board is open. First valid root claims control.'
       : selectedIdx === null
-        ? 'Tap any reel to focus it, type on a Hebrew keyboard, or drag one reel onto another to swap.'
+        ? `Tap any reel to focus it, type on a ${LANGUAGE_LABELS[activeLanguageMode]} keyboard, or drag one reel onto another to swap.`
         : dragSourceIdx === selectedIdx
           ? `${selectedSlotLabel} is moving. Drop it on another reel to swap, or release to keep editing this reel.`
-          : `${selectedSlotLabel} selected. Type a Hebrew letter, drag any reel onto another to swap, or tap the same reel or outside the board to clear.`;
+          : `${selectedSlotLabel} selected. Type a ${LANGUAGE_LABELS[activeLanguageMode]} letter, drag any reel onto another to swap, or tap the same reel or outside the board to clear.`;
   const showSetupOverlay = !isActive;
   const showSummary = Boolean(activeSession && !isActive);
   const showJourneyFailureSolution = Boolean(showSummary && journeySolutionRequest);
@@ -2621,6 +2772,13 @@ export default function App() {
               </span>
             ) : null}
             <span
+              className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-[0.72rem] font-black tracking-[0.16em] text-amber-800"
+              dir="rtl"
+              title={LANGUAGE_LABELS[activeLanguageMode]}
+            >
+              {activeLanguageNativeLabel}
+            </span>
+            <span
               className={[
                 'px-3 py-1.5 text-[0.72rem] font-black uppercase tracking-[0.2em]',
                 activeStreakVisual.badge,
@@ -2644,7 +2802,7 @@ export default function App() {
             ) : null}
             {mode === 'journey' && session?.targetRoot ? (
               <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-[0.72rem] font-black uppercase tracking-[0.2em] text-amber-800" dir={activeDisplayDir}>
-                Target {toDisplayDotted(session.targetRoot.split(''), activeTransliteration)}
+                Target {toDisplayDotted(Array.from(session.targetRoot), activeTransliteration)}
               </span>
             ) : null}
           </div>
@@ -2776,7 +2934,7 @@ export default function App() {
                       <LetterCard
                         key={`slot-${index}`}
                         letter={toDisplayChar(ch, activeTransliteration)}
-                        imgSrc={imgForChar(ch)}
+                        imgSrc={getLetterImageSrc(ch, activeLanguageMode)}
                         selected={selectedIdx === index}
                         swapTarget={isActive && dragOverIdx === index}
                         dragging={dragSourceIdx === index}
@@ -2924,6 +3082,124 @@ export default function App() {
                         >
                           Multiplayer
                         </button>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 rounded-[1.7rem] border border-slate-200/90 bg-[linear-gradient(135deg,rgba(255,255,255,0.98)_0%,rgba(241,245,249,0.9)_100%)] p-4 shadow-[0_20px_56px_-38px_rgba(15,23,42,0.38)]">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
+                            Root language
+                          </div>
+                          <div className="mt-2 text-sm font-bold text-slate-950">
+                            Choose Hebrew or Arabic before the next run.
+                          </div>
+                          <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600">
+                            The root graph, keyboard hints, suggestions, and sample inputs switch together.
+                          </p>
+                        </div>
+                        <span className="rounded-full border border-white/80 bg-white/88 px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.2em] text-slate-500">
+                          {showSummary ? 'Switch for the next round' : 'Visible choice, saved locally'}
+                        </span>
+                      </div>
+
+                      <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        {(['hebrew', 'arabic'] as LanguageMode[]).map((candidateLanguage) => {
+                          const isSelected = activeLanguageMode === candidateLanguage;
+                          const isHebrew = candidateLanguage === 'hebrew';
+
+                          return (
+                            <button
+                              key={candidateLanguage}
+                              type="button"
+                              aria-pressed={isSelected}
+                              className={[
+                                'rounded-[1.45rem] border px-4 py-4 text-right transition',
+                                isSelected
+                                  ? 'border-slate-950 bg-slate-950 text-white shadow-[0_24px_60px_-30px_rgba(15,23,42,0.9)]'
+                                  : isHebrew
+                                    ? 'border-sky-200 bg-[linear-gradient(135deg,rgba(240,249,255,0.98)_0%,rgba(255,255,255,0.98)_100%)] text-slate-900 hover:-translate-y-0.5 hover:border-sky-300'
+                                    : 'border-amber-200 bg-[linear-gradient(135deg,rgba(255,251,235,0.98)_0%,rgba(255,255,255,0.98)_100%)] text-slate-900 hover:-translate-y-0.5 hover:border-amber-300',
+                              ].join(' ')}
+                              onClick={() => changeLanguageMode(candidateLanguage)}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div
+                                    className={[
+                                      'text-[0.64rem] font-black uppercase tracking-[0.24em]',
+                                      isSelected
+                                        ? 'text-white/68'
+                                        : isHebrew
+                                          ? 'text-sky-700'
+                                          : 'text-amber-700',
+                                    ].join(' ')}
+                                    dir="ltr"
+                                  >
+                                    {LANGUAGE_LABELS[candidateLanguage]}
+                                  </div>
+                                  <div className="mt-2 text-[1.65rem] font-black tracking-tight" dir="rtl">
+                                    {LANGUAGE_NATIVE_LABELS[candidateLanguage]}
+                                  </div>
+                                  <div
+                                    className={[
+                                      'mt-1 text-sm font-semibold leading-6',
+                                      isSelected ? 'text-white/78' : 'text-slate-600',
+                                    ].join(' ')}
+                                  >
+                                    {LANGUAGE_DESCRIPTIONS[candidateLanguage]}
+                                  </div>
+                                </div>
+
+                                <span
+                                  className={[
+                                    'rounded-full px-3 py-1.5 text-[0.62rem] font-black uppercase tracking-[0.18em]',
+                                    isSelected
+                                      ? 'border border-white/18 bg-white/12 text-white'
+                                      : 'border border-white/80 bg-white/84 text-slate-600',
+                                  ].join(' ')}
+                                >
+                                  {isSelected ? 'Selected' : 'Tap to choose'}
+                                </span>
+                              </div>
+
+                              <div className="mt-4 flex flex-wrap gap-2 text-[0.64rem] font-black uppercase tracking-[0.18em]">
+                                <span
+                                  className={[
+                                    'rounded-full px-3 py-1.5',
+                                    isSelected
+                                      ? 'border border-white/16 bg-white/10 text-white/84'
+                                      : 'border border-white/90 bg-white/88 text-slate-600',
+                                  ].join(' ')}
+                                >
+                                  Root{' '}
+                                  <span
+                                    className={isSelected ? 'font-mono text-white' : 'font-mono text-slate-950'}
+                                    dir="rtl"
+                                  >
+                                    {LANGUAGE_SAMPLE_ROOTS[candidateLanguage]}
+                                  </span>
+                                </span>
+                                <span
+                                  className={[
+                                    'rounded-full px-3 py-1.5',
+                                    isSelected
+                                      ? 'border border-white/16 bg-white/10 text-white/84'
+                                      : 'border border-white/90 bg-white/88 text-slate-600',
+                                  ].join(' ')}
+                                >
+                                  Keys{' '}
+                                  <span
+                                    className={isSelected ? 'font-mono text-white' : 'font-mono text-slate-950'}
+                                    dir="rtl"
+                                  >
+                                    {LANGUAGE_SAMPLE_DOTTED[candidateLanguage]}
+                                  </span>
+                                </span>
+                              </div>
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
 
@@ -3233,7 +3509,9 @@ export default function App() {
                     {selectedIdx === null ? (
                       <>
                         <span>Tap a reel</span>
-                        <span className="rounded-full bg-slate-950 px-3 py-1 text-white">Then type Hebrew</span>
+                        <span className="rounded-full bg-slate-950 px-3 py-1 text-white">
+                          Then type {LANGUAGE_LABELS[activeLanguageMode]}
+                        </span>
                         <span className="text-slate-500">Or drag a reel onto another to swap</span>
                         <span className="text-slate-500">Keys 1 2 3 also work</span>
                       </>
@@ -3252,7 +3530,7 @@ export default function App() {
                             : `${selectedSlotLabel} selected`}
                         </span>
                         <span className="rounded-full border border-sky-200 bg-white px-3 py-1 text-slate-600">
-                          Type a Hebrew letter
+                          Type a {LANGUAGE_LABELS[activeLanguageMode]} letter
                         </span>
                         <span className="rounded-full border border-emerald-200 bg-white px-3 py-1 text-slate-600">
                           Or drag any reel to swap
@@ -3377,9 +3655,9 @@ export default function App() {
                     ref={suggestRootInputRef}
                     value={suggestedRootInput}
                     onChange={(event) => setSuggestedRootInput(event.target.value)}
-                    placeholder="ברק / b.r.q"
+                    placeholder={activeLanguageMode === 'arabic' ? 'كتب / ك.ت.ب' : 'ברק / b.r.q'}
                     className="mt-2 w-full bg-transparent font-mono text-base font-black text-slate-950 outline-none"
-                    dir="ltr"
+                    dir={activeDisplayDir}
                   />
                 </label>
                 <label className="rounded-[1.15rem] border border-slate-200 bg-slate-50 px-4 py-3">
@@ -3399,7 +3677,9 @@ export default function App() {
 
               <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
                 <div className="text-xs font-semibold text-slate-500">
-                  Hebrew, dotted transliteration, or plain transliteration all work.
+                  {activeLanguageMode === 'arabic'
+                    ? 'Arabic roots work best here. Spaced or dotted Arabic input also works.'
+                    : 'Hebrew, dotted transliteration, or plain transliteration all work.'}
                 </div>
                 <button
                   id="suggest-root-submit"
@@ -3443,7 +3723,7 @@ export default function App() {
                       ].join(' ')}
                       dir={activeDisplayDir}
                     >
-                      {toDisplayDotted(root.split(''), activeTransliteration)}
+                      {toDisplayDotted(Array.from(root), activeTransliteration)}
                     </span>
                   );
                 })
@@ -3524,7 +3804,7 @@ export default function App() {
                 <div className="text-xs text-slate-500">{activeTransliteration.description}</div>
               </div>
               <select
-                value={transliterationPresetId}
+                value={resolvedPresetId}
                 onChange={(event) => {
                   const nextPresetId = event.target.value;
                   if (isTransliterationPresetId(nextPresetId)) {
@@ -3533,26 +3813,37 @@ export default function App() {
                 }}
                 className="mt-3 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-black text-slate-950 outline-none transition focus:border-sky-400"
               >
-                {Object.values(TRANSLITERATION_PRESETS).map((preset) => (
+                {Object.values(TRANSLITERATION_PRESETS)
+                  .filter((preset) => preset.language === activeLanguageMode)
+                  .map((preset) => (
                   <option key={preset.id} value={preset.id}>
                     {preset.label}
                   </option>
                 ))}
               </select>
               <div className="mt-3 flex flex-wrap gap-2">
-                {[
-                  ['א', 'a'],
-                  ['ה', 'e'],
-                  ['ז', 'z'],
-                  ['ע', 'o'],
-                  ['ש', 'c'],
-                ].map(([hebrew, canonical]) => (
+                {(activeLanguageMode === 'arabic'
+                  ? [
+                      ['ك', 'ك'],
+                      ['ت', 'ت'],
+                      ['ب', 'ب'],
+                      ['ع', 'ع'],
+                      ['ق', 'ق'],
+                    ]
+                  : [
+                      ['א', 'a'],
+                      ['ה', 'e'],
+                      ['ז', 'z'],
+                      ['ע', 'o'],
+                      ['ש', 'c'],
+                    ]
+                ).map(([source, canonical]) => (
                   <span
-                    key={`${activeTransliteration.id}-${hebrew}-${canonical}`}
+                    key={`${activeTransliteration.id}-${source}-${canonical}`}
                     className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-black text-slate-700"
                     dir={activeDisplayDir}
                   >
-                    {hebrew} {'->'} {toDisplayChar(canonical, activeTransliteration)}
+                    {source} {'->'} {toDisplayChar(canonical, activeTransliteration)}
                   </span>
                 ))}
               </div>
@@ -3594,9 +3885,9 @@ export default function App() {
                 id="debug-start-root-input"
                 value={startRootInput}
                 onChange={(event) => setStartRootInput(event.target.value)}
-                placeholder="אבה / a.b.h"
+                placeholder={activeLanguageMode === 'arabic' ? 'كتب / ك.ت.ب' : 'אבה / a.b.h'}
                 className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-base font-black text-slate-950 outline-none transition focus:border-sky-400"
-                dir="ltr"
+                dir={activeDisplayDir}
               />
             </label>
             <label className="rounded-[1.25rem] border border-slate-200 bg-white p-3">
@@ -3604,9 +3895,9 @@ export default function App() {
               <input
                 value={targetRootInput}
                 onChange={(event) => setTargetRootInput(event.target.value)}
-                placeholder="שמר / s.m.r"
+                placeholder={activeLanguageMode === 'arabic' ? 'خرج / خ.ر.ج' : 'שמר / s.m.r'}
                 className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-base font-black text-slate-950 outline-none transition focus:border-sky-400"
-                dir="ltr"
+                dir={activeDisplayDir}
               />
             </label>
           </div>
@@ -3648,7 +3939,7 @@ export default function App() {
                           className="font-mono text-sm font-black text-slate-950"
                           dir={activeDisplayDir}
                         >
-                          {toDisplayDotted(suggestion.root.split(''), activeTransliteration)}
+                          {toDisplayDotted(Array.from(suggestion.root), activeTransliteration)}
                         </div>
                         <div className="mt-1 text-xs font-semibold text-slate-500">
                           {new Date(suggestion.createdAtMs).toLocaleString()}
@@ -3722,7 +4013,7 @@ export default function App() {
                   <button
                     key={`${edge.neighbor}-${edge.type}-${edge.positionA}-${edge.positionB}`}
                     type="button"
-                    onClick={() => setLetters(edge.neighbor.split(''))}
+                    onClick={() => setLetters(Array.from(edge.neighbor))}
                     disabled={!canInteractWithBoard}
                     className={[
                       'rounded-xl border px-3 py-2 text-xs font-black transition',
@@ -3734,7 +4025,7 @@ export default function App() {
                         : 'hover:-translate-y-0.5',
                     ].join(' ')}
                   >
-                    {toDisplayDotted(edge.neighbor.split(''), activeTransliteration)}
+                    {toDisplayDotted(Array.from(edge.neighbor), activeTransliteration)}
                   </button>
                 ))
               )}

@@ -7,11 +7,17 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "roots:verify": "python3 scripts/verify_tora_roots.py"
   },
   "dependencies": {
+    "@upstash/redis": "^1.37.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "neo4j-driver": "^6.0.1",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.33.0",
