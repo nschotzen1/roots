@@ -2733,7 +2733,6 @@ function GameApp() {
       ? getComboBurstAnchor(bonusFlash.comboSlots)
       : null;
   const activeExampleMove = LANGUAGE_EXAMPLE_MOVES[activeLanguageMode];
-  const activeLanguageArticle = activeLanguageMode === 'arabic' ? 'an' : 'a';
   const setupTimingFields =
     mode === 'multiplayer'
       ? [
@@ -3234,49 +3233,28 @@ function GameApp() {
                           setupNeedsLanguageChoice ? 'hidden' : '',
                         ].join(' ')}
                         dir="ltr"
-                        aria-label="Game mode"
+                        aria-label="Run actions"
                       >
-                        {(['multiplayer', 'journey', 'survival'] as PlayMode[]).map((candidateMode) => (
-                          <button
-                            key={candidateMode}
-                            type="button"
-                            className={[
-                              'rounded-full px-4 py-2 text-sm font-black transition',
-                              mode === candidateMode
-                                ? 'bg-slate-950 text-white'
-                                : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50',
-                            ].join(' ')}
-                            onClick={() => setMode(candidateMode)}
-                          >
-                            {candidateMode === 'multiplayer'
-                              ? 'Multiplayer'
-                              : candidateMode === 'journey'
-                                ? 'Journey'
-                                : 'Survival'}
-                          </button>
-                        ))}
+                        <button
+                          id="advanced-settings-toggle"
+                          type="button"
+                          aria-expanded={showAdvancedSetup}
+                          aria-controls="advanced-settings-panel"
+                          onClick={() => setShowAdvancedSetup((prev) => !prev)}
+                          className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-700 transition hover:bg-slate-50"
+                        >
+                          {showAdvancedSetup ? 'Hide settings' : 'Run settings'}
+                        </button>
                         {mode !== 'multiplayer' ? (
-                          <>
-                            <button
-                              id="advanced-settings-toggle"
-                              type="button"
-                              aria-expanded={showAdvancedSetup}
-                              aria-controls="advanced-settings-panel"
-                              onClick={() => setShowAdvancedSetup((prev) => !prev)}
-                              className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-700 transition hover:bg-slate-50"
-                            >
-                              {showAdvancedSetup ? 'Hide settings' : 'Tune settings'}
-                            </button>
-                            <button
-                              id="start-btn"
-                              type="button"
-                              onClick={startSession}
-                              disabled={loadingSession}
-                              className="rounded-full bg-slate-950 px-5 py-2 text-sm font-black text-white shadow-[0_16px_44px_-24px_rgba(15,23,42,0.88)] transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
-                            >
-                              {loadingSession ? 'Starting...' : session ? 'Play again' : 'Start run'}
-                            </button>
-                          </>
+                          <button
+                            id="start-btn"
+                            type="button"
+                            onClick={startSession}
+                            disabled={loadingSession}
+                            className="rounded-full bg-slate-950 px-5 py-2 text-sm font-black text-white shadow-[0_16px_44px_-24px_rgba(15,23,42,0.88)] transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+                          >
+                            {loadingSession ? 'Starting...' : session ? 'Play again' : 'Start run'}
+                          </button>
                         ) : null}
                       </div>
                     </div>
@@ -3284,7 +3262,7 @@ function GameApp() {
                     {!setupNeedsLanguageChoice ? (
                       <div
                         id="how-to-play"
-                        className="mt-4 rounded-[1rem] border border-emerald-200 bg-emerald-50/88 p-3 text-right shadow-[0_16px_38px_-30px_rgba(4,120,87,0.42)]"
+                        className="mt-4 rounded-[1rem] border border-emerald-200 bg-emerald-50/88 p-2 text-right shadow-[0_16px_38px_-30px_rgba(4,120,87,0.42)] sm:p-3"
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-emerald-700">
@@ -3294,7 +3272,7 @@ function GameApp() {
                             Valid roots only
                           </span>
                         </div>
-                        <div className="mt-2 grid grid-cols-2 gap-2 text-[0.78rem] font-bold leading-5 text-slate-700 md:grid-cols-4" dir="ltr">
+                        <div className="mt-1 grid grid-cols-2 gap-2 text-[0.78rem] font-bold leading-5 text-slate-700 sm:mt-2 md:grid-cols-4" dir="ltr">
                           <div>
                             <span className="font-black text-emerald-700">1.</span> Tap a reel.
                           </div>
@@ -3311,55 +3289,36 @@ function GameApp() {
                       </div>
                     ) : null}
 
+                    {setupNeedsLanguageChoice ? (
                     <div className="mt-4">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
                           <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
-                            {setupNeedsLanguageChoice ? 'First choice' : 'Root language'}
+                            First choice
                           </div>
                           <div className="mt-1 text-sm font-bold text-slate-950">
-                            {setupNeedsLanguageChoice
-                              ? 'Choose the alphabet you want to play in.'
-                              : `${LANGUAGE_LABELS[activeLanguageMode]} selected for this run.`}
+                            Choose the alphabet you want to play in.
                           </div>
                         </div>
-                        {setupNeedsLanguageChoice ? (
-                          <span className="rounded-full border border-white/80 bg-white/88 px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.2em] text-slate-500" dir="ltr">
-                            Tap one card
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSetupStage('language');
-                              setShowAdvancedSetup(false);
-                            }}
-                            className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.2em] text-slate-600 transition hover:bg-slate-50"
-                            dir="ltr"
-                          >
-                            Change language
-                          </button>
-                        )}
+                        <span className="rounded-full border border-white/80 bg-white/88 px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.2em] text-slate-500" dir="ltr">
+                          Tap one card
+                        </span>
                       </div>
 
-                      {setupNeedsLanguageChoice ? (
-                      <div className="mt-3 grid grid-cols-2 gap-3" dir="ltr">
+                      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2" dir="ltr">
                         {(['hebrew', 'arabic'] as LanguageMode[]).map((candidateLanguage) => {
-                          const isSelected = activeLanguageMode === candidateLanguage;
                           const isHebrew = candidateLanguage === 'hebrew';
 
                           return (
                             <button
                               key={candidateLanguage}
                               type="button"
-                              aria-pressed={isSelected}
+                              aria-pressed={false}
                               className={[
                                 'group relative min-h-[7.25rem] overflow-hidden rounded-[1.35rem] border p-0 text-right transition sm:min-h-[8.25rem]',
-                                isSelected
-                                  ? 'border-emerald-500 bg-slate-950 text-white shadow-[0_24px_60px_-30px_rgba(15,23,42,0.9)]'
-                                  : isHebrew
-                                    ? 'border-sky-200 bg-sky-50 text-slate-900 hover:-translate-y-0.5 hover:border-sky-300'
-                                    : 'border-amber-200 bg-amber-50 text-slate-900 hover:-translate-y-0.5 hover:border-amber-300',
+                                isHebrew
+                                  ? 'border-sky-200 bg-sky-50 text-slate-900 hover:-translate-y-0.5 hover:border-sky-300'
+                                  : 'border-amber-200 bg-amber-50 text-slate-900 hover:-translate-y-0.5 hover:border-amber-300',
                               ].join(' ')}
                               onClick={() => chooseSetupLanguage(candidateLanguage)}
                             >
@@ -3369,17 +3328,15 @@ function GameApp() {
                                 aria-hidden="true"
                                 className={[
                                   'absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-[1.03]',
-                                  isSelected ? 'opacity-[0.48]' : 'opacity-[0.24]',
+                                  'opacity-[0.28]',
                                 ].join(' ')}
                               />
                               <div
                                 className={[
                                   'absolute inset-0',
-                                  isSelected
-                                    ? 'bg-slate-950/62'
-                                    : isHebrew
-                                      ? 'bg-[linear-gradient(135deg,rgba(240,249,255,0.94),rgba(255,255,255,0.82))]'
-                                      : 'bg-[linear-gradient(135deg,rgba(255,251,235,0.94),rgba(255,255,255,0.82))]',
+                                  isHebrew
+                                    ? 'bg-[linear-gradient(135deg,rgba(240,249,255,0.94),rgba(255,255,255,0.82))]'
+                                    : 'bg-[linear-gradient(135deg,rgba(255,251,235,0.94),rgba(255,255,255,0.82))]',
                                 ].join(' ')}
                               />
 
@@ -3389,11 +3346,7 @@ function GameApp() {
                                     <div
                                       className={[
                                         'text-[0.62rem] font-black uppercase tracking-[0.24em]',
-                                        isSelected
-                                          ? 'text-white/72'
-                                          : isHebrew
-                                            ? 'text-sky-700'
-                                            : 'text-amber-700',
+                                        isHebrew ? 'text-sky-700' : 'text-amber-700',
                                       ].join(' ')}
                                       dir="ltr"
                                     >
@@ -3405,7 +3358,7 @@ function GameApp() {
                                     <div
                                       className={[
                                         'mt-1.5 hidden text-sm font-semibold leading-5 sm:block',
-                                        isSelected ? 'text-white/82' : 'text-slate-700',
+                                        'text-slate-700',
                                       ].join(' ')}
                                     >
                                       {LANGUAGE_DESCRIPTIONS[candidateLanguage]}
@@ -3415,43 +3368,37 @@ function GameApp() {
                                   <span
                                     className={[
                                       'rounded-full px-3 py-1.5 text-[0.62rem] font-black uppercase tracking-[0.18em]',
-                                      isSelected
-                                        ? 'border border-white/22 bg-white/14 text-white'
-                                        : 'border border-white/80 bg-white/84 text-slate-600',
+                                      'border border-white/80 bg-white/84 text-slate-600',
                                     ].join(' ')}
                                   >
-                                    {isSelected ? 'Selected' : 'Choose'}
+                                    {isHebrew ? 'Start Hebrew' : 'Start Arabic'}
                                   </span>
                                 </div>
 
                                 <div className="mt-3 hidden flex-wrap gap-2 text-[0.64rem] font-black uppercase tracking-[0.18em] sm:flex">
                                   <span
-                                    className={[
-                                      'rounded-full px-3 py-1.5',
-                                      isSelected
-                                        ? 'border border-white/16 bg-white/10 text-white/84'
-                                        : 'border border-white/90 bg-white/88 text-slate-600',
+                                      className={[
+                                        'rounded-full px-3 py-1.5',
+                                      'border border-white/90 bg-white/88 text-slate-600',
                                     ].join(' ')}
                                   >
                                     Root{' '}
                                     <span
-                                      className={isSelected ? 'font-mono text-white' : 'font-mono text-slate-950'}
+                                      className="font-mono text-slate-950"
                                       dir="rtl"
                                     >
                                       {LANGUAGE_SAMPLE_ROOTS[candidateLanguage]}
                                     </span>
                                   </span>
                                   <span
-                                    className={[
-                                      'rounded-full px-3 py-1.5',
-                                      isSelected
-                                        ? 'border border-white/16 bg-white/10 text-white/84'
-                                        : 'border border-white/90 bg-white/88 text-slate-600',
+                                      className={[
+                                        'rounded-full px-3 py-1.5',
+                                      'border border-white/90 bg-white/88 text-slate-600',
                                     ].join(' ')}
                                   >
                                     Keys{' '}
                                     <span
-                                      className={isSelected ? 'font-mono text-white' : 'font-mono text-slate-950'}
+                                      className="font-mono text-slate-950"
                                       dir="rtl"
                                     >
                                       {LANGUAGE_SAMPLE_DOTTED[candidateLanguage]}
@@ -3463,61 +3410,31 @@ function GameApp() {
                           );
                         })}
                       </div>
-                      ) : (
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          <span
-                            className="rounded-full border border-slate-950 bg-slate-950 px-4 py-2 text-sm font-black text-white shadow-sm"
-                            dir="rtl"
-                          >
-                            {LANGUAGE_NATIVE_LABELS[activeLanguageMode]}
-                          </span>
-                          <span className="rounded-full border border-white/80 bg-white/78 px-4 py-2 text-[0.72rem] font-black uppercase tracking-[0.18em] text-slate-600" dir="ltr">
-                            Sample root{' '}
-                            <span className="font-mono text-slate-950" dir="rtl">
-                              {LANGUAGE_SAMPLE_ROOTS[activeLanguageMode]}
-                            </span>
-                          </span>
-                        </div>
-                      )}
                     </div>
+                    ) : null}
 
                     {!setupNeedsLanguageChoice ? (
-                    <div id="example-move-panel" className="mt-4 rounded-[1.15rem] border border-emerald-200 bg-emerald-50/88 p-3 text-right shadow-[0_16px_38px_-30px_rgba(4,120,87,0.42)]">
+                    <div id="example-move-panel" className="mt-3 rounded-[1.15rem] border border-emerald-200 bg-emerald-50/88 p-2 text-right shadow-[0_16px_38px_-30px_rgba(4,120,87,0.42)] sm:mt-4 sm:p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
                           <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-emerald-700">
                             Example
                           </div>
-                          <div className="mt-1 text-sm font-black text-slate-950">
+                          <div className="mt-1 hidden text-sm font-black text-slate-950 sm:block">
                             This is what a valid move looks like.
                           </div>
                         </div>
-                        <span className="rounded-full border border-white/80 bg-white/78 px-3 py-1 text-[0.62rem] font-black uppercase tracking-[0.18em] text-emerald-700" dir="ltr">
+                        <span className="hidden rounded-full border border-white/80 bg-white/78 px-3 py-1 text-[0.62rem] font-black uppercase tracking-[0.18em] text-emerald-700 sm:inline-flex" dir="ltr">
                           Beat the timer
                         </span>
                       </div>
-                      <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1.05fr)_minmax(17rem,0.95fr)]">
-                        <div className="grid grid-cols-2 gap-2 text-[0.78rem] font-bold leading-5 text-slate-700 md:grid-cols-2" dir="ltr">
-                        <div>
-                          <span className="font-black text-emerald-700">1.</span> Tap a reel.
-                        </div>
-                        <div>
-                            <span className="font-black text-emerald-700">2.</span> Type or pick {activeLanguageArticle} {LANGUAGE_LABELS[activeLanguageMode]} letter.
-                        </div>
-                        <div>
-                          <span className="font-black text-emerald-700">3.</span> Drag reels to swap.
-                        </div>
-                        <div>
-                            <span className="font-black text-emerald-700">4.</span> New valid root only. No repeats.
-                          </div>
-                        </div>
-
+                      <div className="mt-2 sm:mt-3">
                         <div
                           id="valid-root-example"
-                          className="overflow-hidden rounded-[1rem] border border-white/80 bg-white/80 p-3 shadow-sm"
+                          className="overflow-hidden rounded-[1rem] border border-white/80 bg-white/80 p-2 shadow-sm sm:p-3"
                           dir="ltr"
                         >
-                          <div className="mb-2 flex items-center justify-between gap-2">
+                          <div className="mb-2 hidden items-center justify-between gap-2 sm:flex">
                             <span className="text-[0.62rem] font-black uppercase tracking-[0.2em] text-emerald-700">
                               Example valid move
                             </span>
@@ -3526,19 +3443,19 @@ function GameApp() {
                             </span>
                           </div>
                           <div
-                            className="rounded-[0.85rem] bg-cover bg-center p-3 shadow-[inset_0_0_0_999px_rgba(255,255,255,0.74)]"
+                            className="rounded-[0.85rem] bg-cover bg-center p-2 shadow-[inset_0_0_0_999px_rgba(255,255,255,0.74)] sm:p-3"
                             style={{ backgroundImage: `url(${STAGE_BACKGROUND_IMAGE})` }}
                           >
                             <div className="flex items-center justify-center gap-2">
                               <span
-                                className="rounded-[0.65rem] bg-slate-950 px-3 py-2 font-mono text-xl font-black text-white"
+                                className="rounded-[0.65rem] bg-slate-950 px-2 py-1.5 font-mono text-lg font-black text-white sm:px-3 sm:py-2 sm:text-xl"
                                 dir={activeDisplayDir}
                               >
                                 {toDisplayPlainRoot(activeExampleMove.fromRoot, activeTransliteration)}
                               </span>
                               <span className="text-xl font-black text-emerald-700">→</span>
                               <span
-                                className="rounded-[0.65rem] border border-emerald-200 bg-emerald-50 px-3 py-2 font-mono text-xl font-black text-slate-950"
+                                className="rounded-[0.65rem] border border-emerald-200 bg-emerald-50 px-2 py-1.5 font-mono text-lg font-black text-slate-950 sm:px-3 sm:py-2 sm:text-xl"
                                 dir={activeDisplayDir}
                               >
                                 {toDisplayPlainRoot(activeExampleMove.toRoot, activeTransliteration)}
@@ -3551,6 +3468,39 @@ function GameApp() {
                         </div>
                       </div>
                     </div>
+                    ) : null}
+
+                    {!setupNeedsLanguageChoice ? (
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-[1rem] border border-slate-200 bg-white/74 px-3 py-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[0.62rem] font-black uppercase tracking-[0.2em] text-slate-500" dir="ltr">
+                            Root language
+                          </span>
+                          <span
+                            className="rounded-full border border-slate-950 bg-slate-950 px-3 py-1.5 text-sm font-black text-white shadow-sm"
+                            dir="rtl"
+                          >
+                            {LANGUAGE_NATIVE_LABELS[activeLanguageMode]}
+                          </span>
+                          <span className="rounded-full border border-white/80 bg-white/78 px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.16em] text-slate-600" dir="ltr">
+                            Sample{' '}
+                            <span className="font-mono text-slate-950" dir="rtl">
+                              {LANGUAGE_SAMPLE_ROOTS[activeLanguageMode]}
+                            </span>
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSetupStage('language');
+                            setShowAdvancedSetup(false);
+                          }}
+                          className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.2em] text-slate-600 transition hover:bg-slate-50"
+                          dir="ltr"
+                        >
+                          Change language
+                        </button>
+                      </div>
                     ) : null}
 
                     {!setupNeedsLanguageChoice && showSummary ? (
@@ -3672,30 +3622,6 @@ function GameApp() {
                           </label>
                         </div>
 
-                        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                          <div className="flex flex-wrap gap-2">
-                            {setupTimingFields.map((field) => (
-                              <span
-                                key={`summary-${field.id}`}
-                                className="rounded-full border border-white/80 bg-white/78 px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.18em] text-slate-600"
-                                dir="ltr"
-                              >
-                                {field.label} {Math.round(field.value / 1000)}s
-                              </span>
-                            ))}
-                          </div>
-                          <button
-                            id="advanced-settings-toggle"
-                            type="button"
-                            aria-expanded={showAdvancedSetup}
-                            aria-controls="advanced-settings-panel"
-                            onClick={() => setShowAdvancedSetup((prev) => !prev)}
-                            className="rounded-full border border-slate-200 bg-white px-4 py-2 text-[0.72rem] font-black uppercase tracking-[0.2em] text-slate-700 transition hover:bg-slate-50"
-                          >
-                            {showAdvancedSetup ? 'Hide settings' : 'Tune settings'}
-                          </button>
-                        </div>
-
                         <div className="mt-3 flex flex-wrap gap-3">
                           <button
                             id="create-room-btn"
@@ -3717,19 +3643,7 @@ function GameApp() {
                           </button>
                         </div>
                       </>
-                    ) : (
-                      <div className="mt-3 flex flex-wrap items-center gap-2">
-                        {setupTimingFields.map((field) => (
-                          <span
-                            key={`summary-${field.id}`}
-                            className="rounded-full border border-white/80 bg-white/78 px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.18em] text-slate-600"
-                            dir="ltr"
-                          >
-                            {field.label} {Math.round(field.value / 1000)}s
-                          </span>
-                        ))}
-                      </div>
-                    )
+                    ) : null
                     ) : null}
 
                     {!setupNeedsLanguageChoice && showAdvancedSetup ? (
@@ -3740,6 +3654,37 @@ function GameApp() {
                           mode === 'multiplayer' ? 'md:grid-cols-4' : 'md:grid-cols-3',
                         ].join(' ')}
                       >
+                        <div
+                          className={[
+                            'rounded-[1.15rem] border border-slate-200 bg-slate-50 px-4 py-3',
+                            mode === 'multiplayer' ? 'md:col-span-4' : 'md:col-span-3',
+                          ].join(' ')}
+                        >
+                          <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
+                            Run type
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-2" dir="ltr" aria-label="Game mode">
+                            {(['survival', 'journey', 'multiplayer'] as PlayMode[]).map((candidateMode) => (
+                              <button
+                                key={candidateMode}
+                                type="button"
+                                className={[
+                                  'rounded-full px-4 py-2 text-sm font-black transition',
+                                  mode === candidateMode
+                                    ? 'bg-slate-950 text-white'
+                                    : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50',
+                                ].join(' ')}
+                                onClick={() => setMode(candidateMode)}
+                              >
+                                {candidateMode === 'multiplayer'
+                                  ? 'Multiplayer'
+                                  : candidateMode === 'journey'
+                                    ? 'Journey'
+                                    : 'Survival'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
                         {setupTimingFields.map((field) => (
                           <label
                             key={field.id}
@@ -3775,7 +3720,7 @@ function GameApp() {
                       <p className="mt-3 text-sm leading-6 text-slate-600">
                         {mode === 'multiplayer'
                           ? 'Each player has their own streak and score. Invalid roots reset only your streak. While one player controls the board, everyone else waits for the window to expire.'
-                          : 'Repeat roots are blocked. Quick hits pay bigger time refills. X bonus lives at 1-3, Y at 4-8, Z at 9-12, and every miss drops you back to 0.'}
+                          : 'Repeat roots are blocked. Quick hits pay bigger time refills.'}
                       </p>
                     ) : null}
                   </div>
