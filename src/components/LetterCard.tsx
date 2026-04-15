@@ -109,7 +109,7 @@ export default function LetterCard({
         <div className="mosaic-slot-focus-frame pointer-events-none absolute inset-[2.8%] z-[2] rounded-[1rem]" />
       ) : null}
       {isEmbedded && selected ? (
-        <div className="pointer-events-none absolute inset-x-0 top-[4.5%] flex justify-center">
+        <div className="mosaic-slot-internal-hint pointer-events-none absolute inset-x-0 top-[4.5%] flex justify-center">
           <div
             className={[
               'rounded-[1rem] px-4 py-2 text-center',
@@ -190,7 +190,7 @@ export default function LetterCard({
           {letter || '·'}
         </span>
       </div>
-      <div className={isEmbedded ? 'absolute inset-x-0 bottom-0 flex items-center justify-center pb-2.5' : 'absolute inset-x-0 bottom-0 flex items-center justify-center pb-4'}>
+      <div className={isEmbedded ? 'mosaic-slot-footer absolute inset-x-0 bottom-0 flex items-center justify-center pb-2.5' : 'absolute inset-x-0 bottom-0 flex items-center justify-center pb-4'}>
         <div
           className={[
             isEmbedded

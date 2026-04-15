@@ -79,3 +79,32 @@ See `.env.example` for the optional variable shape.
 ## Transliteration
 
 The game supports Hebrew input plus the project’s transliteration mapping, including final-letter normalization (`ך ם ן ף ץ`).
+
+## Arabic Mosaic Letter Batch Generation
+
+The repo now includes a repeatable prompt pipeline for the Arabic letter art under `public/letters/arabic/`.
+
+Preview prompts without calling the API:
+
+```bash
+npm run letters:arabic:mosaic -- --dry-run
+```
+
+Generate only one or two missing letters:
+
+```bash
+npm run letters:arabic:mosaic -- --only hh,ayn
+```
+
+Regenerate everything and overwrite existing PNGs:
+
+```bash
+npm run letters:arabic:mosaic -- --force
+```
+
+Notes:
+
+- The generator reads the authoritative Arabic filename stems from `src/game/letterAssets.ts`.
+- Prompt previews are written to `output/imagegen/arabic-mosaic-prompts/`.
+- Intermediate batch JSONL goes under `tmp/imagegen/`.
+- A live run requires `OPENAI_API_KEY`. If the variable is missing, the script automatically falls back to a dry run.

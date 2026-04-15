@@ -47,15 +47,15 @@ export default function BonusToast({
   return (
     <div
       className={[
-        'pointer-events-none fixed left-1/2 top-18 z-40 -translate-x-1/2 transition-all duration-300 md:top-20',
+        'pointer-events-none fixed bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] left-1/2 z-40 w-[min(92vw,24rem)] -translate-x-1/2 transition-all duration-300 sm:bottom-auto sm:top-18 sm:w-auto md:top-20',
         visible ? 'translate-y-0 opacity-100 scale-100' : '-translate-y-5 opacity-0 scale-95',
       ].join(' ')}
       aria-live="polite"
     >
-      <div className="relative overflow-hidden rounded-[2rem] border border-amber-200/70 bg-[#fff6e2]/96 px-6 py-4 text-slate-950 shadow-[0_26px_80px_-30px_rgba(15,23,42,0.82)] backdrop-blur">
+      <div className="relative overflow-hidden rounded-[1rem] border border-amber-200/70 bg-[#fff6e2]/96 px-4 py-3 text-slate-950 shadow-[0_26px_80px_-30px_rgba(15,23,42,0.82)] backdrop-blur sm:rounded-[2rem] sm:px-6 sm:py-4">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(251,191,36,0.34),transparent_42%),radial-gradient(circle_at_78%_20%,rgba(236,72,153,0.12),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.56),transparent_55%)]" />
         <div className="relative">
-          <div className="mb-3 flex flex-wrap items-center gap-2">
+          <div className="mb-2 flex flex-wrap items-center gap-2 sm:mb-3">
             <span className={['rounded-full border px-3 py-1 text-[0.66rem] font-black uppercase tracking-[0.2em]', moveToneClass].join(' ')}>
               {moveType === 'SWAP' ? 'Swap bonus' : 'Letter change'}
             </span>
@@ -75,8 +75,8 @@ export default function BonusToast({
               </span>
             ) : null}
           </div>
-          <div className="flex items-end gap-5">
-            <div className="text-4xl font-black leading-none text-amber-600 drop-shadow-[0_4px_10px_rgba(245,158,11,0.24)] md:text-5xl">
+          <div className="flex items-end gap-3 sm:gap-5">
+            <div className="text-3xl font-black leading-none text-amber-600 drop-shadow-[0_4px_10px_rgba(245,158,11,0.24)] sm:text-4xl md:text-5xl">
               +{formatSeconds(bonusMs)}
             </div>
             <div className="text-right">

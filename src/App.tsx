@@ -3,6 +3,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import BonusToast from './components/BonusToast';
 import ComboBurst from './components/ComboBurst';
 import LetterCard from './components/LetterCard';
+import OpeningIntro from './components/OpeningIntro';
 import StreakBubble from './components/StreakBubble';
 import StreakPulse from './components/StreakPulse';
 import { advanceApiTime, isApiError, requestJson, resetApiTime } from './game/apiClient';
@@ -472,6 +473,9 @@ const LANGUAGE_SAMPLE_DOTTED: Record<LanguageMode, string> = {
   arabic: 'ك.ت.ب',
 };
 
+const HEBREW_REPLACEMENT_KEYS = Object.keys(GAME_TO_HEBREW);
+const ARABIC_REPLACEMENT_KEYS = Array.from(ARABIC_ROOT_CHAR_SET);
+
 const formatSeconds = (ms: number) => `${(ms / 1000).toFixed(ms % 1000 === 0 ? 0 : 1)}s`;
 
 const formatElapsed = (ms: number) => {
@@ -757,7 +761,7 @@ const getBonusBaseMs = (session: SessionSnapshot | null, fallback = DEFAULT_BONU
 const getBonusWindowMs = (session: SessionSnapshot | null, fallback = DEFAULT_BONUS_WINDOW_MS) =>
   session?.config?.bonusWindowMs ?? fallback;
 
-export default function App() {
+function GameApp() {
   const [mode, setMode] = useState<PlayMode>('survival');
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const [room, setRoom] = useState<RoomSnapshot | null>(null);
@@ -803,6 +807,7 @@ export default function App() {
     source: 'unavailable',
     sample: null,
   });
+  const [prefersTouchInput, setPrefersTouchInput] = useState(false);
   const [showSuggestionPanel, setShowSuggestionPanel] = useState(false);
   const [suggestedRootInput, setSuggestedRootInput] = useState('');
   const [suggestionNoteInput, setSuggestionNoteInput] = useState('');
@@ -913,6 +918,21 @@ export default function App() {
   const candidateDotted = useMemo(
     () => toDisplayDotted(letters, activeTransliteration),
     [activeTransliteration, letters],
+  );
+  const replacementPalette = useMemo(
+    () =>
+      activeLanguageMode === 'hebrew'
+        ? HEBREW_REPLACEMENT_KEYS.map((value) => ({
+            value,
+            label: toDisplayChar(value, activeTransliteration),
+            nativeLabel: GAME_TO_HEBREW[value] ?? value,
+          }))
+        : ARABIC_REPLACEMENT_KEYS.map((value) => ({
+            value,
+            label: value,
+            nativeLabel: value,
+          })),
+    [activeLanguageMode, activeTransliteration],
   );
   const isCandidateValid = useMemo(() => neighborsSet.has(candidatePlain), [neighborsSet, candidatePlain]);
 
@@ -1137,10 +1157,16 @@ export default function App() {
   const focusTypingInput = useCallback(() => {
     const input = typingInputRef.current;
     if (!input) return;
+
+    if (prefersTouchInput) {
+      input.blur();
+      return;
+    }
+
     void refreshKeyboardLayout();
     input.focus({ preventScroll: true });
     input.select();
-  }, [refreshKeyboardLayout]);
+  }, [prefersTouchInput, refreshKeyboardLayout]);
 
   const clearDragState = useCallback(() => {
     dragGestureRef.current = null;
@@ -2137,14 +2163,10 @@ export default function App() {
     [canInteractWithBoard, clearSelection, dragSourceIdx, selectedIdx],
   );
 
-  const applyTypedCharacter = useCallback(
-    (rawValue: string) => {
+  const applyMappedCharacter = useCallback(
+    (mapped: string) => {
       if (!canInteractWithBoard || !activeSession || selectedIdx === null) return;
-      const nextKey = Array.from(rawValue).at(-1);
-      if (!nextKey) return;
-
-      const mapped = mapKeyToGameChar(nextKey, activeLanguageMode, activeTransliteration);
-      if (!mapped) return;
+      if (!mapped || Array.from(mapped).length !== 1) return;
 
       clearDragState();
       setLetters((prev) => {
@@ -2153,12 +2175,51 @@ export default function App() {
         return next;
       });
     },
-    [activeLanguageMode, activeSession, activeTransliteration, canInteractWithBoard, clearDragState, selectedIdx],
+    [activeSession, canInteractWithBoard, clearDragState, selectedIdx],
+  );
+
+  const applyTypedCharacter = useCallback(
+    (rawValue: string) => {
+      const nextKey = Array.from(rawValue).at(-1);
+      if (!nextKey) return;
+
+      const mapped = mapKeyToGameChar(nextKey, activeLanguageMode, activeTransliteration);
+      if (!mapped) return;
+
+      applyMappedCharacter(mapped);
+    },
+    [activeLanguageMode, activeTransliteration, applyMappedCharacter],
   );
 
   useEffect(() => {
     void checkBackendHealth();
   }, [checkBackendHealth]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const mediaQuery = window.matchMedia?.('(pointer: coarse)');
+    const updateTouchInputPreference = () => {
+      const coarsePointer = Boolean(mediaQuery?.matches);
+      const touchPoints = typeof navigator === 'undefined' ? 0 : navigator.maxTouchPoints || 0;
+      setPrefersTouchInput(coarsePointer || (touchPoints > 0 && window.innerWidth <= 900));
+    };
+
+    updateTouchInputPreference();
+    window.addEventListener('resize', updateTouchInputPreference);
+    mediaQuery?.addEventListener?.('change', updateTouchInputPreference);
+
+    return () => {
+      window.removeEventListener('resize', updateTouchInputPreference);
+      mediaQuery?.removeEventListener?.('change', updateTouchInputPreference);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!prefersTouchInput) return;
+    typingInputRef.current?.blur();
+    clearTypingInput();
+  }, [clearTypingInput, prefersTouchInput]);
 
   useEffect(() => {
     if (!showDebug && !showSuggestionPanel) return;
@@ -2335,12 +2396,7 @@ export default function App() {
       const mapped = mapKeyToGameChar(event.key, activeLanguageMode, activeTransliteration);
       if (mapped) {
         event.preventDefault();
-        clearDragState();
-        setLetters((prev) => {
-          const next = [...prev];
-          next[selectedIdx] = mapped;
-          return next;
-        });
+        applyMappedCharacter(mapped);
         return;
       }
 
@@ -2362,6 +2418,7 @@ export default function App() {
     activeLanguageMode,
     activeSession,
     activeTransliteration,
+    applyMappedCharacter,
     clearSelection,
     clearDragState,
     canInteractWithBoard,
@@ -2476,6 +2533,8 @@ export default function App() {
           neighborsCount: neighborsSet.size,
           neighborsSample: neighborSample,
           visitedRootsVisible: visibleVisitedRoots,
+          touchLetterPickerVisible: prefersTouchInput && selectedIdx !== null && canInteractWithBoard,
+          replacementPaletteCount: replacementPalette.length,
         },
         bonusFlash: activeBonus,
         attemptFlash: activeAttempt,
@@ -2507,6 +2566,7 @@ export default function App() {
             expected: activeLanguageMode,
           },
           keyboardSwitchHint: keyboardSwitchGuide.hint,
+          prefersTouchInput,
           loadingSession,
           submittingMove,
           infoText: infoText || null,
@@ -2530,6 +2590,7 @@ export default function App() {
     attemptFlash,
     attemptFlashVisible,
     activeStreakPulse,
+    canInteractWithBoard,
     candidatePlain,
     committedPlain,
     errorText,
@@ -2542,7 +2603,9 @@ export default function App() {
     activeController?.name,
     activeRoomPlayer?.name,
     pendingSuggestionsCount,
+    prefersTouchInput,
     remainingMs,
+    replacementPalette.length,
     reelFx,
     serverHealthy,
     showDebug,
@@ -2606,10 +2669,14 @@ export default function App() {
         : mode === 'multiplayer' && room?.phase === 'open_claim'
           ? 'Board is open. First valid root claims control.'
       : selectedIdx === null
-        ? `Tap any reel to focus it, type on a ${LANGUAGE_LABELS[activeLanguageMode]} keyboard, or drag one reel onto another to swap.`
+        ? prefersTouchInput
+          ? `Tap any reel to focus it, pick a ${LANGUAGE_LABELS[activeLanguageMode]} letter, or drag one reel onto another to swap.`
+          : `Tap any reel to focus it, type on a ${LANGUAGE_LABELS[activeLanguageMode]} keyboard, or drag one reel onto another to swap.`
         : dragSourceIdx === selectedIdx
           ? `${selectedSlotLabel} is moving. Drop it on another reel to swap, or release to keep editing this reel.`
-          : `${selectedSlotLabel} selected. Type a ${LANGUAGE_LABELS[activeLanguageMode]} letter, drag any reel onto another to swap, or tap the same reel or outside the board to clear.`;
+          : prefersTouchInput
+            ? `${selectedSlotLabel} selected. Pick a ${LANGUAGE_LABELS[activeLanguageMode]} letter, drag any reel onto another to swap, or tap the same reel or outside the board to clear.`
+            : `${selectedSlotLabel} selected. Type a ${LANGUAGE_LABELS[activeLanguageMode]} letter, drag any reel onto another to swap, or tap the same reel or outside the board to clear.`;
   const showSetupOverlay = !isActive;
   const showSummary = Boolean(activeSession && !isActive);
   const showJourneyFailureSolution = Boolean(showSummary && journeySolutionRequest);
@@ -2619,7 +2686,7 @@ export default function App() {
       : null;
 
   return (
-    <div className="relative min-h-screen overflow-hidden text-slate-900" dir="rtl">
+    <div className="relative min-h-[100dvh] overflow-hidden text-slate-900" dir="rtl">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_18%,rgba(191,219,254,0.55),transparent_32%),radial-gradient(circle_at_86%_14%,rgba(251,191,36,0.22),transparent_28%),radial-gradient(circle_at_52%_88%,rgba(56,189,248,0.22),transparent_30%),linear-gradient(170deg,#f7f0df_0%,#f4f8fb_42%,#eef4ff_100%)]" />
       <div className="pointer-events-none absolute left-[-12%] top-8 h-72 w-72 rounded-full bg-sky-300/30 blur-3xl motion-safe:animate-[floaty_18s_ease-in-out_infinite]" />
       <div className="pointer-events-none absolute right-[-10%] top-36 h-80 w-80 rounded-full bg-amber-300/25 blur-3xl motion-safe:animate-[floaty_22s_ease-in-out_infinite_reverse]" />
@@ -2642,7 +2709,7 @@ export default function App() {
 
       <div
         className={[
-          'pointer-events-none fixed left-1/2 top-44 z-40 -translate-x-1/2 transition-all duration-300 md:top-48',
+          'pointer-events-none fixed bottom-[calc(env(safe-area-inset-bottom)+5.4rem)] left-1/2 z-40 w-[min(92vw,22rem)] -translate-x-1/2 transition-all duration-300 sm:bottom-auto sm:top-44 sm:w-auto md:top-48',
           attemptFlashVisible ? 'translate-y-0 opacity-100 scale-100' : '-translate-y-3 opacity-0 scale-95',
         ].join(' ')}
         aria-live="polite"
@@ -2742,7 +2809,7 @@ export default function App() {
         }}
       />
 
-      <main className="relative mx-auto flex min-h-screen w-full max-w-[96rem] flex-col justify-between px-3 py-3 md:px-5 md:py-5">
+      <main className="relative mx-auto flex min-h-[100dvh] w-full max-w-[96rem] flex-col justify-between px-2 py-2 sm:px-3 sm:py-3 md:px-5 md:py-5">
         <header className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="text-[0.68rem] font-black uppercase tracking-[0.3em] text-slate-500">
@@ -2750,7 +2817,7 @@ export default function App() {
             </div>
             <div
               className={[
-                'mt-2 text-[clamp(3.8rem,11vw,6.6rem)] font-black leading-none tabular-nums text-slate-950',
+                'mt-1 text-[clamp(3rem,15vw,4.6rem)] font-black leading-none tabular-nums text-slate-950 sm:mt-2 sm:text-[clamp(3.8rem,11vw,6.6rem)]',
                 timerBurstActive ? 'timer-bonus-number' : '',
               ].join(' ')}
               dir="ltr"
@@ -2873,7 +2940,8 @@ export default function App() {
 
               {isActive && selectedIdx !== null && selectedSlotCenter ? (
                 <div
-                  className="pointer-events-none absolute z-[32]"
+                  id="selected-reel-popover"
+                  className="pointer-events-none absolute z-[32] hidden sm:block"
                   style={{
                     left: `${selectedSlotCenter.x}%`,
                     top: `${Math.max(8, selectedSlotCenter.y - selectedSlotCenter.height / 2 - 7)}%`,
@@ -3502,77 +3570,130 @@ export default function App() {
 
               {isActive ? (
                 <div className="flex flex-col items-center gap-2">
-                  <div
-                    className="flex flex-wrap items-center justify-center gap-2 rounded-full border border-white/80 bg-white/72 px-3 py-2 text-[0.72rem] font-black uppercase tracking-[0.2em] text-slate-700 shadow-sm backdrop-blur"
-                    dir="ltr"
-                  >
-                    {selectedIdx === null ? (
-                      <>
-                        <span>Tap a reel</span>
-                        <span className="rounded-full bg-slate-950 px-3 py-1 text-white">
-                          Then type {LANGUAGE_LABELS[activeLanguageMode]}
-                        </span>
-                        <span className="text-slate-500">Or drag a reel onto another to swap</span>
-                        <span className="text-slate-500">Keys 1 2 3 also work</span>
-                      </>
-                    ) : (
-                      <>
-                        <span
-                          className={[
-                            'rounded-full px-3 py-1',
-                            dragSourceIdx === selectedIdx
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-sky-100 text-sky-800',
-                          ].join(' ')}
-                        >
-                          {dragSourceIdx === selectedIdx
-                            ? `${selectedSlotLabel} dragging`
-                            : `${selectedSlotLabel} selected`}
-                        </span>
-                        <span className="rounded-full border border-sky-200 bg-white px-3 py-1 text-slate-600">
-                          Type a {LANGUAGE_LABELS[activeLanguageMode]} letter
-                        </span>
-                        <span className="rounded-full border border-emerald-200 bg-white px-3 py-1 text-slate-600">
-                          Or drag any reel to swap
-                        </span>
-                        <button
-                          type="button"
-                          onClick={clearSelection}
-                          className="rounded-full border border-slate-200 bg-white px-3 py-1 text-slate-600 transition hover:bg-slate-50"
-                        >
-                          Clear Focus
-                        </button>
-                      </>
-                    )}
-                  </div>
-
-                  <div
-                    className={[
-                      'flex flex-wrap items-center justify-center gap-2 rounded-[1.35rem] border px-4 py-3 text-[0.76rem] font-black uppercase tracking-[0.18em] backdrop-blur',
-                      keyboardIndicatorShellClass,
-                    ].join(' ')}
-                    dir="ltr"
-                  >
-                    <span className="rounded-full border border-white/70 bg-white/72 px-3 py-1 text-[0.64rem] text-slate-600">
-                      Keyboard
-                    </span>
-                    <span className={['h-3 w-3 rounded-full', keyboardIndicatorDotClass].join(' ')} />
-                    <span className="text-[0.8rem] tracking-[0.24em] text-current">
-                      {keyboardIndicatorStatusLabel}
-                    </span>
-                    <span
-                      className={[
-                        'rounded-full border border-white/75 bg-white/80 px-3 py-1.5 text-[0.82rem] shadow-sm',
-                        keyboardIndicatorToneClass,
-                      ].join(' ')}
-                      dir={keyboardIndicatorDir}
+                  {!prefersTouchInput ? (
+                    <div
+                      className="flex flex-wrap items-center justify-center gap-2 rounded-full border border-white/80 bg-white/72 px-3 py-2 text-[0.72rem] font-black uppercase tracking-[0.2em] text-slate-700 shadow-sm backdrop-blur"
+                      dir="ltr"
                     >
-                      {keyboardIndicatorLabel}
-                    </span>
-                    <span className="text-center text-[0.66rem] tracking-[0.2em] text-current/80">
-                      {keyboardIndicatorHint}
-                    </span>
-                  </div>
+                      {selectedIdx === null ? (
+                        <>
+                          <span>Tap a reel</span>
+                          <span className="rounded-full bg-slate-950 px-3 py-1 text-white">
+                            Then type {LANGUAGE_LABELS[activeLanguageMode]}
+                          </span>
+                          <span className="text-slate-500">Or drag a reel onto another to swap</span>
+                          <span className="text-slate-500">Keys 1 2 3 also work</span>
+                        </>
+                      ) : (
+                        <>
+                          <span
+                            className={[
+                              'rounded-full px-3 py-1',
+                              dragSourceIdx === selectedIdx
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-sky-100 text-sky-800',
+                            ].join(' ')}
+                          >
+                            {dragSourceIdx === selectedIdx
+                              ? `${selectedSlotLabel} dragging`
+                              : `${selectedSlotLabel} selected`}
+                          </span>
+                          <span className="rounded-full border border-sky-200 bg-white px-3 py-1 text-slate-600">
+                            Type a {LANGUAGE_LABELS[activeLanguageMode]} letter
+                          </span>
+                          <span className="rounded-full border border-emerald-200 bg-white px-3 py-1 text-slate-600">
+                            Or drag any reel to swap
+                          </span>
+                          <button
+                            type="button"
+                            onClick={clearSelection}
+                            className="rounded-full border border-slate-200 bg-white px-3 py-1 text-slate-600 transition hover:bg-slate-50"
+                          >
+                            Clear Focus
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  ) : null}
+
+                  {prefersTouchInput ? (
+                    <div className="flex w-full max-w-[42rem] flex-col items-center gap-2">
+                      <div
+                        id="mobile-touch-guide"
+                        className="rounded-full border border-white/80 bg-white/78 px-4 py-2 text-center text-[0.72rem] font-black uppercase tracking-[0.18em] text-slate-700 shadow-sm backdrop-blur"
+                        dir="ltr"
+                      >
+                        {selectedIdx === null
+                          ? `Tap a reel, then pick a ${LANGUAGE_LABELS[activeLanguageMode]} letter`
+                          : `${selectedSlotLabel ?? 'Selected reel'} ready · pick a letter below`}
+                      </div>
+
+                      {selectedIdx !== null ? (
+                        <div
+                          id="mobile-letter-picker"
+                          className="w-full rounded-[1rem] border border-white/80 bg-white/86 px-3 py-2 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.45)] backdrop-blur"
+                        >
+                          <div className="mb-2 flex items-center justify-between gap-2 text-[0.64rem] font-black uppercase tracking-[0.18em] text-slate-500" dir="ltr">
+                            <span>Choose letter</span>
+                            <span>{LANGUAGE_LABELS[activeLanguageMode]}</span>
+                            <button
+                              type="button"
+                              onClick={clearSelection}
+                              className="rounded-[0.5rem] border border-slate-200 bg-white px-2 py-1 text-slate-600 shadow-sm"
+                            >
+                              Clear
+                            </button>
+                          </div>
+                          <div
+                            className="flex max-w-[calc(100vw-2rem)] gap-1.5 overflow-x-auto overscroll-x-contain pb-1"
+                            dir={activeDisplayDir}
+                          >
+                            {replacementPalette.map((item) => (
+                              <button
+                                key={`${activeLanguageMode}-${item.value}`}
+                                type="button"
+                                onClick={() => applyMappedCharacter(item.value)}
+                                disabled={submittingMove}
+                                aria-label={`Replace ${selectedSlotLabel?.toLowerCase() ?? 'selected reel'} with ${item.nativeLabel}`}
+                                className="min-h-10 min-w-10 rounded-[0.5rem] border border-slate-200 bg-white px-3 text-center text-xl font-black text-slate-950 shadow-sm transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                                dir={activeDisplayDir}
+                              >
+                                {item.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div
+                      className={[
+                        'flex flex-wrap items-center justify-center gap-2 rounded-[1.35rem] border px-4 py-3 text-[0.76rem] font-black uppercase tracking-[0.18em] backdrop-blur',
+                        keyboardIndicatorShellClass,
+                      ].join(' ')}
+                      dir="ltr"
+                    >
+                      <span className="rounded-full border border-white/70 bg-white/72 px-3 py-1 text-[0.64rem] text-slate-600">
+                        Keyboard
+                      </span>
+                      <span className={['h-3 w-3 rounded-full', keyboardIndicatorDotClass].join(' ')} />
+                      <span className="text-[0.8rem] tracking-[0.24em] text-current">
+                        {keyboardIndicatorStatusLabel}
+                      </span>
+                      <span
+                        className={[
+                          'rounded-full border border-white/75 bg-white/80 px-3 py-1.5 text-[0.82rem] shadow-sm',
+                          keyboardIndicatorToneClass,
+                        ].join(' ')}
+                        dir={keyboardIndicatorDir}
+                      >
+                        {keyboardIndicatorLabel}
+                      </span>
+                      <span className="text-center text-[0.66rem] tracking-[0.2em] text-current/80">
+                        {keyboardIndicatorHint}
+                      </span>
+                    </div>
+                  )}
                 </div>
               ) : null}
 
@@ -4056,4 +4177,19 @@ export default function App() {
       ) : null}
     </div>
   );
+}
+
+const shouldSkipOpeningIntro = () => {
+  if (typeof window === 'undefined') return false;
+  return new URLSearchParams(window.location.search).get('skipOpeningIntro') === '1';
+};
+
+export default function App() {
+  const [openingIntroComplete, setOpeningIntroComplete] = useState(shouldSkipOpeningIntro);
+
+  if (!openingIntroComplete) {
+    return <OpeningIntro onComplete={() => setOpeningIntroComplete(true)} />;
+  }
+
+  return <GameApp />;
 }

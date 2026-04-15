@@ -1,0 +1,121 @@
+.openingIntro {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  overflow: hidden;
+  isolation: isolate;
+  background: #0f0806;
+}
+
+.openingIntro__still,
+.openingIntro__video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #050404;
+}
+
+.openingIntro__still {
+  z-index: 0;
+  filter: saturate(0.96) contrast(1.02);
+}
+
+.openingIntro__video {
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 420ms ease;
+}
+
+.openingIntro__video--visible {
+  opacity: 1;
+}
+
+.openingIntro--closing-still {
+  cursor: pointer;
+}
+
+.openingIntro__curtainStage {
+  --opening-intro-curtain-lift-duration: 3200ms;
+
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  background: transparent;
+  animation: openingIntroPulse 6s ease-in-out infinite;
+}
+
+.openingIntro__curtainStage--lifting {
+  pointer-events: none;
+}
+
+.openingIntro__projectorBeam {
+  position: absolute;
+  z-index: 1;
+  width: 300px;
+  height: 300px;
+  border-radius: 50%;
+  background: radial-gradient(circle at center, rgba(255, 255, 255, 0.15), transparent 70%);
+  filter: blur(80px);
+  animation:
+    openingIntroLightExpand 5s ease-in-out forwards,
+    openingIntroGlowPulse 3s ease-in-out infinite;
+}
+
+.openingIntro__curtain {
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: translateY(0%);
+  transform-origin: center top;
+  opacity: 1;
+  filter: none;
+  transition:
+    transform var(--opening-intro-curtain-lift-duration) cubic-bezier(0.18, 0.78, 0.18, 1),
+    opacity var(--opening-intro-curtain-lift-duration) ease-in-out,
+    filter var(--opening-intro-curtain-lift-duration) ease-in-out;
+}
+
+.openingIntro__curtain--lifted {
+  transform: translateY(-114%) scale(1.04);
+  opacity: 0;
+  filter: blur(45px);
+}
+
+@keyframes openingIntroPulse {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.08); }
+}
+
+@keyframes openingIntroGlowPulse {
+  0%, 100% {
+    opacity: 0.15;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.3;
+    transform: scale(1.1);
+  }
+}
+
+@keyframes openingIntroLightExpand {
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+
+  100% {
+    opacity: 1;
+    transform: scale(2);
+  }
+}

@@ -383,3 +383,10 @@ input:focus-visible {
 .streak-stage-wash {
   animation: streakStageWash 1.85s ease-in-out infinite;
 }
+
+@media (max-width: 640px) {
+  .mosaic-slot-internal-hint,
+  .mosaic-slot-footer {
+    display: none;
+  }
+}

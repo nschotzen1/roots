@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "roots:verify": "python3 scripts/verify_tora_roots.py"
+    "roots:verify": "python3 scripts/verify_tora_roots.py",
+    "letters:arabic:mosaic": "node scripts/generateArabicLetterMosaics.mjs"
   },
   "dependencies": {
     "@upstash/redis": "^1.37.0",
