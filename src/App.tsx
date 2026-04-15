@@ -468,6 +468,29 @@ const LANGUAGE_CARD_TAGLINES: Record<LanguageMode, string> = {
   arabic: 'Play with Arabic roots',
 };
 
+const LANGUAGE_EXAMPLE_MOVES: Record<
+  LanguageMode,
+  {
+    fromRoot: string;
+    toRoot: string;
+    action: string;
+    note: string;
+  }
+> = {
+  hebrew: {
+    fromRoot: 'brq',
+    toRoot: 'brk',
+    action: 'Replace one letter',
+    note: 'Both roots are valid, so the move counts.',
+  },
+  arabic: {
+    fromRoot: 'علم',
+    toRoot: 'عمل',
+    action: 'Swap two letters',
+    note: 'A swap is allowed only when the new root is real.',
+  },
+};
+
 const LANGUAGE_DESCRIPTIONS: Record<LanguageMode, string> = {
   hebrew: 'Hebrew roots with Hebrew script and transliteration support.',
   arabic: 'Arabic roots with Arabic script input and keyboard hints.',
@@ -648,6 +671,9 @@ const toDisplayChar = (ch: string, preset: TransliterationPreset) => {
 const toDisplayDotted = (letters: string[], preset: TransliterationPreset) =>
   letters.map((letter) => toDisplayChar(letter, preset)).join('.');
 
+const toDisplayPlainRoot = (plainRoot: string, preset: TransliterationPreset) =>
+  Array.from(plainRoot || '').map((letter) => toDisplayChar(letter, preset)).join('');
+
 const formatDisplayRoot = (plainRoot: string, preset: TransliterationPreset) =>
   toDisplayDotted(Array.from(plainRoot || ''), preset);
 
@@ -797,6 +823,7 @@ function GameApp() {
   const [controlWindowMs, setControlWindowMs] = useState(DEFAULT_CONTROL_WINDOW_MS);
   const [maxControlMs, setMaxControlMs] = useState(DEFAULT_MAX_CONTROL_MS);
   const [showAdvancedSetup, setShowAdvancedSetup] = useState(false);
+  const [setupStage, setSetupStage] = useState<'language' | 'ready'>('language');
 
   const [serverHealthy, setServerHealthy] = useState<boolean | null>(null);
   const [loadingSession, setLoadingSession] = useState(false);
@@ -1358,6 +1385,15 @@ function GameApp() {
       setTransliterationPresetId(DEFAULT_PRESET_BY_LANGUAGE[nextLanguage]);
     },
     [activeLanguageMode, resetGameplayUi, room, session],
+  );
+
+  const chooseSetupLanguage = useCallback(
+    (nextLanguage: LanguageMode) => {
+      changeLanguageMode(nextLanguage);
+      setSetupStage('ready');
+      setShowAdvancedSetup(false);
+    },
+    [changeLanguageMode],
   );
 
   const checkBackendHealth = useCallback(async () => {
@@ -2690,11 +2726,14 @@ function GameApp() {
             : `${selectedSlotLabel} selected. Type a ${LANGUAGE_LABELS[activeLanguageMode]} letter, drag any reel onto another to swap, or tap the same reel or outside the board to clear.`;
   const showSetupOverlay = !isActive;
   const showSummary = Boolean(activeSession && !isActive);
+  const setupNeedsLanguageChoice = Boolean(showSetupOverlay && !showSummary && setupStage === 'language');
   const showJourneyFailureSolution = Boolean(showSummary && journeySolutionRequest);
   const activeComboBurst =
     bonusFlash && bonusFlashVisible && bonusFlash.comboLabel && bonusFlash.comboCount >= 2
       ? getComboBurstAnchor(bonusFlash.comboSlots)
       : null;
+  const activeExampleMove = LANGUAGE_EXAMPLE_MOVES[activeLanguageMode];
+  const activeLanguageArticle = activeLanguageMode === 'arabic' ? 'an' : 'a';
   const setupTimingFields =
     mode === 'multiplayer'
       ? [
@@ -2814,6 +2853,7 @@ function GameApp() {
         onClick={() => setShowDebug((prev) => !prev)}
         className={[
           'fixed left-4 top-4 z-50 rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.24em] shadow-lg backdrop-blur transition',
+          isActive && prefersTouchInput ? 'hidden' : '',
           showDebug
             ? 'border-slate-950 bg-slate-950 text-white'
             : 'border-white/80 bg-white/72 text-slate-700 hover:bg-white',
@@ -2868,9 +2908,14 @@ function GameApp() {
         }}
       />
 
-      <main className="relative mx-auto flex min-h-[100dvh] w-full max-w-[96rem] flex-col justify-between px-2 py-2 sm:px-3 sm:py-3 md:px-5 md:py-5">
-        <header className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
+      <main
+        className={[
+          'game-play-shell relative mx-auto flex min-h-[100dvh] w-full max-w-[96rem] flex-col justify-between px-2 py-2 sm:px-3 sm:py-3 md:px-5 md:py-5',
+          isActive ? 'game-play-shell--active' : '',
+        ].join(' ')}
+      >
+        <header className="game-top-hud flex items-start justify-between gap-3">
+          <div className="game-timer-hud min-w-0">
             <div className="text-[0.68rem] font-black uppercase tracking-[0.3em] text-slate-500">
               {mode === 'multiplayer' ? 'Control window' : 'Time left'}
             </div>
@@ -2885,7 +2930,7 @@ function GameApp() {
             </div>
           </div>
 
-          <div className="flex max-w-[50%] flex-wrap items-center justify-end gap-2">
+          <div className="game-secondary-hud flex max-w-[50%] flex-wrap items-center justify-end gap-2">
             <span className="rounded-full border border-white/80 bg-white/76 px-3 py-1.5 text-[0.72rem] font-black uppercase tracking-[0.2em] text-slate-700">
               Score {scoreValue}
             </span>
@@ -2934,11 +2979,11 @@ function GameApp() {
           </div>
         </header>
 
-        <section className="relative flex flex-1 items-center justify-center py-1 md:py-2">
-          <div className="relative w-full max-w-[104rem]">
+        <section className="game-stage-section relative flex flex-1 items-center justify-center py-1 md:py-2">
+          <div className="game-stage-wrap relative">
             <div
               className={[
-                'relative mx-auto aspect-[3/2] w-full drop-shadow-[0_42px_90px_rgba(15,23,42,0.24)]',
+                'mosaic-stage relative mx-auto aspect-[3/2] w-full drop-shadow-[0_42px_90px_rgba(15,23,42,0.24)]',
                 reelFx === 'shake' ? 'slot-bank-shake' : '',
                 reelFx === 'spin' ? 'slot-bank-celebrate' : '',
               ].join(' ')}
@@ -3140,7 +3185,8 @@ function GameApp() {
               {showSetupOverlay ? (
                 <div
                   className={[
-                    'absolute inset-x-[4%] top-[4%] z-30 flex justify-center md:inset-x-[8%] md:bottom-[22%] md:top-auto',
+                    'absolute inset-x-[4%] top-[4%] z-30 flex justify-center md:inset-x-[8%]',
+                    setupNeedsLanguageChoice ? 'md:top-[14%]' : 'md:bottom-[22%] md:top-auto',
                   ].join(' ')}
                 >
                   <div
@@ -3152,27 +3198,44 @@ function GameApp() {
                     <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                       <div>
                         <div className="text-[0.68rem] font-black uppercase tracking-[0.32em] text-slate-500">
-                          {showSummary ? (mode === 'multiplayer' ? 'Room over' : 'Round over') : 'Choose your run'}
+                          {setupNeedsLanguageChoice
+                            ? 'Choose language'
+                            : showSummary
+                              ? mode === 'multiplayer'
+                                ? 'Room over'
+                                : 'Round over'
+                              : 'Choose your run'}
                         </div>
-                        <h1 className="mt-2 font-['Suez_One'] text-2xl tracking-tight text-slate-950 md:text-3xl">
-                          {showSummary
+                        <h1 className="mt-2 font-['Suez_One'] text-2xl tracking-tight text-slate-950 md:text-3xl" dir="ltr">
+                          {setupNeedsLanguageChoice
+                            ? 'Choose Hebrew or Arabic'
+                            : showSummary
                             ? mode === 'multiplayer'
                               ? 'Room closed'
                               : activeSession?.status === 'completed'
                                 ? 'Target reached'
                                 : 'Spin again'
-                            : 'Pick a root world'}
+                            : 'Goal: make real roots'}
                         </h1>
                         <p className="mt-1 max-w-xl text-sm leading-6 text-slate-600" dir="ltr">
-                          {showSummary
+                          {setupNeedsLanguageChoice
+                            ? 'Pick one root world first. The game, keyboard hints, and examples will switch with it.'
+                            : showSummary
                             ? formatReason(activeSession?.reason) || (mode === 'multiplayer' ? 'The room is over.' : 'The round is over.')
                             : mode === 'multiplayer'
                               ? 'Share a room code. The first valid root claims control, and streaks stretch that control window.'
-                              : 'Choose a language, press start, then chase fresh roots.'}
+                              : 'Use one-letter changes or swaps. Every result must be a valid root.'}
                         </p>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2" dir="ltr" aria-label="Game mode">
+                      <div
+                        className={[
+                          'flex flex-wrap items-center gap-2',
+                          setupNeedsLanguageChoice ? 'hidden' : '',
+                        ].join(' ')}
+                        dir="ltr"
+                        aria-label="Game mode"
+                      >
                         {(['multiplayer', 'journey', 'survival'] as PlayMode[]).map((candidateMode) => (
                           <button
                             key={candidateMode}
@@ -3218,21 +3281,68 @@ function GameApp() {
                       </div>
                     </div>
 
+                    {!setupNeedsLanguageChoice ? (
+                      <div
+                        id="how-to-play"
+                        className="mt-4 rounded-[1rem] border border-emerald-200 bg-emerald-50/88 p-3 text-right shadow-[0_16px_38px_-30px_rgba(4,120,87,0.42)]"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-emerald-700">
+                            How to play
+                          </div>
+                          <span className="rounded-full border border-white/80 bg-white/78 px-3 py-1 text-[0.62rem] font-black uppercase tracking-[0.18em] text-emerald-700" dir="ltr">
+                            Valid roots only
+                          </span>
+                        </div>
+                        <div className="mt-2 grid grid-cols-2 gap-2 text-[0.78rem] font-bold leading-5 text-slate-700 md:grid-cols-4" dir="ltr">
+                          <div>
+                            <span className="font-black text-emerald-700">1.</span> Tap a reel.
+                          </div>
+                          <div>
+                            <span className="font-black text-emerald-700">2.</span> Replace one letter.
+                          </div>
+                          <div>
+                            <span className="font-black text-emerald-700">3.</span> Or drag to swap.
+                          </div>
+                          <div>
+                            <span className="font-black text-emerald-700">4.</span> Real root or no score.
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+
                     <div className="mt-4">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
                           <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
-                            Root language
+                            {setupNeedsLanguageChoice ? 'First choice' : 'Root language'}
                           </div>
                           <div className="mt-1 text-sm font-bold text-slate-950">
-                            Pick the alphabet for this run.
+                            {setupNeedsLanguageChoice
+                              ? 'Choose the alphabet you want to play in.'
+                              : `${LANGUAGE_LABELS[activeLanguageMode]} selected for this run.`}
                           </div>
                         </div>
-                        <span className="rounded-full border border-white/80 bg-white/88 px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.2em] text-slate-500" dir="ltr">
-                          {showSummary ? 'Next round' : 'Saved locally'}
-                        </span>
+                        {setupNeedsLanguageChoice ? (
+                          <span className="rounded-full border border-white/80 bg-white/88 px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.2em] text-slate-500" dir="ltr">
+                            Tap one card
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSetupStage('language');
+                              setShowAdvancedSetup(false);
+                            }}
+                            className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.2em] text-slate-600 transition hover:bg-slate-50"
+                            dir="ltr"
+                          >
+                            Change language
+                          </button>
+                        )}
                       </div>
 
+                      {setupNeedsLanguageChoice ? (
                       <div className="mt-3 grid grid-cols-2 gap-3" dir="ltr">
                         {(['hebrew', 'arabic'] as LanguageMode[]).map((candidateLanguage) => {
                           const isSelected = activeLanguageMode === candidateLanguage;
@@ -3246,12 +3356,12 @@ function GameApp() {
                               className={[
                                 'group relative min-h-[7.25rem] overflow-hidden rounded-[1.35rem] border p-0 text-right transition sm:min-h-[8.25rem]',
                                 isSelected
-                                  ? 'border-slate-950 bg-slate-950 text-white shadow-[0_24px_60px_-30px_rgba(15,23,42,0.9)]'
+                                  ? 'border-emerald-500 bg-slate-950 text-white shadow-[0_24px_60px_-30px_rgba(15,23,42,0.9)]'
                                   : isHebrew
                                     ? 'border-sky-200 bg-sky-50 text-slate-900 hover:-translate-y-0.5 hover:border-sky-300'
                                     : 'border-amber-200 bg-amber-50 text-slate-900 hover:-translate-y-0.5 hover:border-amber-300',
                               ].join(' ')}
-                              onClick={() => changeLanguageMode(candidateLanguage)}
+                              onClick={() => chooseSetupLanguage(candidateLanguage)}
                             >
                               <img
                                 src={LANGUAGE_CARD_IMAGES[candidateLanguage]}
@@ -3353,34 +3463,97 @@ function GameApp() {
                           );
                         })}
                       </div>
+                      ) : (
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <span
+                            className="rounded-full border border-slate-950 bg-slate-950 px-4 py-2 text-sm font-black text-white shadow-sm"
+                            dir="rtl"
+                          >
+                            {LANGUAGE_NATIVE_LABELS[activeLanguageMode]}
+                          </span>
+                          <span className="rounded-full border border-white/80 bg-white/78 px-4 py-2 text-[0.72rem] font-black uppercase tracking-[0.18em] text-slate-600" dir="ltr">
+                            Sample root{' '}
+                            <span className="font-mono text-slate-950" dir="rtl">
+                              {LANGUAGE_SAMPLE_ROOTS[activeLanguageMode]}
+                            </span>
+                          </span>
+                        </div>
+                      )}
                     </div>
 
-                    <div id="how-to-play" className="mt-4 rounded-[1.15rem] border border-emerald-200 bg-emerald-50/88 p-3 text-right shadow-[0_16px_38px_-30px_rgba(4,120,87,0.42)]">
+                    {!setupNeedsLanguageChoice ? (
+                    <div id="example-move-panel" className="mt-4 rounded-[1.15rem] border border-emerald-200 bg-emerald-50/88 p-3 text-right shadow-[0_16px_38px_-30px_rgba(4,120,87,0.42)]">
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-emerald-700">
-                          How to play
+                        <div>
+                          <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-emerald-700">
+                            Example
+                          </div>
+                          <div className="mt-1 text-sm font-black text-slate-950">
+                            This is what a valid move looks like.
+                          </div>
                         </div>
                         <span className="rounded-full border border-white/80 bg-white/78 px-3 py-1 text-[0.62rem] font-black uppercase tracking-[0.18em] text-emerald-700" dir="ltr">
-                          Make real roots before zero
+                          Beat the timer
                         </span>
                       </div>
-                      <div className="mt-2 grid grid-cols-2 gap-2 text-[0.78rem] font-bold leading-5 text-slate-700 md:grid-cols-4" dir="ltr">
+                      <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1.05fr)_minmax(17rem,0.95fr)]">
+                        <div className="grid grid-cols-2 gap-2 text-[0.78rem] font-bold leading-5 text-slate-700 md:grid-cols-2" dir="ltr">
                         <div>
                           <span className="font-black text-emerald-700">1.</span> Tap a reel.
                         </div>
                         <div>
-                          <span className="font-black text-emerald-700">2.</span> Type or pick a {LANGUAGE_LABELS[activeLanguageMode]} letter.
+                            <span className="font-black text-emerald-700">2.</span> Type or pick {activeLanguageArticle} {LANGUAGE_LABELS[activeLanguageMode]} letter.
                         </div>
                         <div>
                           <span className="font-black text-emerald-700">3.</span> Drag reels to swap.
                         </div>
                         <div>
-                          <span className="font-black text-emerald-700">4.</span> No repeats. Streaks add time.
+                            <span className="font-black text-emerald-700">4.</span> New valid root only. No repeats.
+                          </div>
+                        </div>
+
+                        <div
+                          id="valid-root-example"
+                          className="overflow-hidden rounded-[1rem] border border-white/80 bg-white/80 p-3 shadow-sm"
+                          dir="ltr"
+                        >
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <span className="text-[0.62rem] font-black uppercase tracking-[0.2em] text-emerald-700">
+                              Example valid move
+                            </span>
+                            <span className="rounded-full border border-emerald-100 bg-emerald-50 px-2 py-1 text-[0.58rem] font-black uppercase tracking-[0.16em] text-emerald-700">
+                              {activeExampleMove.action}
+                            </span>
+                          </div>
+                          <div
+                            className="rounded-[0.85rem] bg-cover bg-center p-3 shadow-[inset_0_0_0_999px_rgba(255,255,255,0.74)]"
+                            style={{ backgroundImage: `url(${STAGE_BACKGROUND_IMAGE})` }}
+                          >
+                            <div className="flex items-center justify-center gap-2">
+                              <span
+                                className="rounded-[0.65rem] bg-slate-950 px-3 py-2 font-mono text-xl font-black text-white"
+                                dir={activeDisplayDir}
+                              >
+                                {toDisplayPlainRoot(activeExampleMove.fromRoot, activeTransliteration)}
+                              </span>
+                              <span className="text-xl font-black text-emerald-700">→</span>
+                              <span
+                                className="rounded-[0.65rem] border border-emerald-200 bg-emerald-50 px-3 py-2 font-mono text-xl font-black text-slate-950"
+                                dir={activeDisplayDir}
+                              >
+                                {toDisplayPlainRoot(activeExampleMove.toRoot, activeTransliteration)}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="mt-2 text-xs font-bold leading-5 text-slate-600">
+                            {activeExampleMove.note}
+                          </div>
                         </div>
                       </div>
                     </div>
+                    ) : null}
 
-                    {showSummary ? (
+                    {!setupNeedsLanguageChoice && showSummary ? (
                       <div className="mt-4 flex flex-wrap items-center gap-2">
                         <span className="rounded-full bg-slate-950 px-3 py-1.5 text-[0.72rem] font-black uppercase tracking-[0.2em] text-white">
                           Score {scoreValue}
@@ -3394,7 +3567,7 @@ function GameApp() {
                       </div>
                     ) : null}
 
-                    {showJourneyFailureSolution ? (
+                    {!setupNeedsLanguageChoice && showJourneyFailureSolution ? (
                       <div
                         id="journey-solution-card"
                         className="mt-4 rounded-[1.6rem] border border-amber-200 bg-[linear-gradient(135deg,rgba(255,251,235,0.98)_0%,rgba(255,243,199,0.92)_100%)] p-4 shadow-[0_22px_56px_-34px_rgba(180,83,9,0.48)]"
@@ -3469,7 +3642,8 @@ function GameApp() {
                       </div>
                     ) : null}
 
-                    {mode === 'multiplayer' ? (
+                    {!setupNeedsLanguageChoice ? (
+                    mode === 'multiplayer' ? (
                       <>
                         <div className="mt-4 grid gap-3 md:grid-cols-2">
                           <label className="rounded-[1.4rem] border border-slate-200 bg-slate-50 px-4 py-3">
@@ -3555,9 +3729,10 @@ function GameApp() {
                           </span>
                         ))}
                       </div>
-                    )}
+                    )
+                    ) : null}
 
-                    {showAdvancedSetup ? (
+                    {!setupNeedsLanguageChoice && showAdvancedSetup ? (
                       <div
                         id="advanced-settings-panel"
                         className={[
@@ -3596,7 +3771,7 @@ function GameApp() {
                       </div>
                     ) : null}
 
-                    {!showSummary ? (
+                    {!setupNeedsLanguageChoice && !showSummary ? (
                       <p className="mt-3 text-sm leading-6 text-slate-600">
                         {mode === 'multiplayer'
                           ? 'Each player has their own streak and score. Invalid roots reset only your streak. While one player controls the board, everyone else waits for the window to expire.'
@@ -3608,8 +3783,8 @@ function GameApp() {
               ) : null}
             </div>
 
-            <div className="mt-5 flex flex-col items-center gap-3">
-              <div className="flex flex-wrap items-center justify-center gap-2">
+            <div className="game-play-controls mt-5 flex flex-col items-center gap-3">
+              <div className="game-status-chips flex flex-wrap items-center justify-center gap-2">
                 <span className="rounded-full border border-white/80 bg-white/74 px-4 py-2 text-[0.72rem] font-black uppercase tracking-[0.24em] text-slate-700">
                   {sessionStateLabel}
                 </span>
@@ -3687,15 +3862,15 @@ function GameApp() {
 
                   {prefersTouchInput ? (
                     <div className="flex w-full max-w-[42rem] flex-col items-center gap-2">
-                      <div
-                        id="mobile-touch-guide"
-                        className="rounded-full border border-white/80 bg-white/78 px-4 py-2 text-center text-[0.72rem] font-black uppercase tracking-[0.18em] text-slate-700 shadow-sm backdrop-blur"
-                        dir="ltr"
-                      >
-                        {selectedIdx === null
-                          ? `Tap a reel, then pick a ${LANGUAGE_LABELS[activeLanguageMode]} letter`
-                          : `${selectedSlotLabel ?? 'Selected reel'} ready · pick a letter below`}
-                      </div>
+                      {selectedIdx === null ? (
+                        <div
+                          id="mobile-touch-guide"
+                          className="mobile-touch-guide rounded-full border border-white/80 bg-white/78 px-4 py-2 text-center text-[0.72rem] font-black uppercase tracking-[0.18em] text-slate-700 shadow-sm backdrop-blur"
+                          dir="ltr"
+                        >
+                          Tap a reel, then pick a {LANGUAGE_LABELS[activeLanguageMode]} letter
+                        </div>
+                      ) : null}
 
                       {selectedIdx !== null ? (
                         <div
@@ -3766,7 +3941,7 @@ function GameApp() {
                 </div>
               ) : null}
 
-              <p className="text-center text-sm font-semibold text-slate-600">
+              <p className="game-helper-copy text-center text-sm font-semibold text-slate-600">
                 {lastMove?.ok
                   ? `Solved in ${formatElapsed(lastMove.elapsedMs ?? 0)}`
                   : helperText}
@@ -3796,7 +3971,7 @@ function GameApp() {
           </div>
         </section>
 
-        <footer className="pb-1">
+        <footer className="game-footer pb-1">
           <div className="mb-2 flex items-center justify-between gap-3">
             <div className="text-[0.72rem] font-black uppercase tracking-[0.28em] text-slate-500">Roots made</div>
             <div className="flex items-center gap-2">

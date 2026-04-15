@@ -147,6 +147,23 @@
     background: transparent;
     filter: drop-shadow(0 24px 48px rgba(0, 0, 0, 0.42));
   }
+
+  .openingIntro__curtain {
+    width: 116%;
+    max-width: none;
+    object-position: center;
+  }
+}
+
+@media (orientation: landscape) and (max-width: 900px) {
+  .openingIntro__curtain {
+    object-position: center 46%;
+  }
+
+  .openingIntro__projectorBeam {
+    width: 42vmin;
+    height: 42vmin;
+  }
 }
 
 @keyframes openingIntroPulse {
