@@ -15,12 +15,35 @@ const INTRO_CURTAIN_SRC = '/intro/curtain.png';
 const INTRO_OPENING_STILL_HOLD_MS = 1200;
 const INTRO_CURTAIN_LIFT_MS = 3200;
 const INTRO_VIDEO_INDEX_STORAGE_KEY = 'rootGameIntroVideoRotationIndex';
+const INTRO_PORTRAIT_VIDEO_MEDIA_QUERY = '(orientation: portrait) and (max-aspect-ratio: 4 / 5)';
 
 type IntroPhase = 'curtain' | 'opening-still' | 'video' | 'closing-still';
 
 type OpeningIntroProps = {
   onComplete: () => void;
 };
+
+const seekMediaToStart = (media: HTMLMediaElement | null) => {
+  if (!media) return;
+
+  try {
+    media.currentTime = 0;
+  } catch {
+    // Media can reject seeking before metadata is ready; playback can still continue.
+  }
+};
+
+const stopAndRewindMedia = (media: HTMLMediaElement | null) => {
+  if (!media) return;
+
+  media.pause();
+  seekMediaToStart(media);
+};
+
+const shouldUsePortraitVideoBackdrop = () =>
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia(INTRO_PORTRAIT_VIDEO_MEDIA_QUERY).matches;
 
 const pickNextIntroVideo = () => {
   const fallback = INTRO_VIDEO_SOURCES[0];
@@ -53,6 +76,7 @@ const pickNextIntroVideo = () => {
 export default function OpeningIntro({ onComplete }: OpeningIntroProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const videoBackdropRef = useRef<HTMLVideoElement | null>(null);
   const phaseTimeoutRef = useRef<number | null>(null);
   const [phase, setPhase] = useState<IntroPhase>('curtain');
   const [curtainLifted, setCurtainLifted] = useState(false);
@@ -78,9 +102,23 @@ export default function OpeningIntro({ onComplete }: OpeningIntroProps) {
     if (phase !== 'video') return;
 
     const video = videoRef.current;
+    const videoBackdrop = videoBackdropRef.current;
     if (!video || typeof video.play !== 'function') return;
 
+    if (shouldUsePortraitVideoBackdrop() && videoBackdrop && typeof videoBackdrop.play === 'function') {
+      try {
+        seekMediaToStart(videoBackdrop);
+        const playResult = videoBackdrop.play();
+        if (playResult && typeof playResult.catch === 'function') {
+          playResult.catch(() => {});
+        }
+      } catch {
+        // The backdrop is decorative; the foreground video owns the intro flow.
+      }
+    }
+
     try {
+      seekMediaToStart(video);
       const playResult = video.play();
       if (playResult && typeof playResult.catch === 'function') {
         playResult.catch(() => setPhase('closing-still'));
@@ -96,19 +134,15 @@ export default function OpeningIntro({ onComplete }: OpeningIntroProps) {
       phaseTimeoutRef.current = null;
     }
 
-    const audio = audioRef.current;
-    if (audio) {
-      audio.pause();
-      audio.currentTime = 0;
-    }
+    stopAndRewindMedia(audioRef.current);
+    stopAndRewindMedia(videoRef.current);
+    stopAndRewindMedia(videoBackdropRef.current);
   }, []);
 
   const completeIntro = () => {
-    const audio = audioRef.current;
-    if (audio) {
-      audio.pause();
-      audio.currentTime = 0;
-    }
+    stopAndRewindMedia(audioRef.current);
+    stopAndRewindMedia(videoRef.current);
+    stopAndRewindMedia(videoBackdropRef.current);
 
     onComplete();
   };
@@ -166,16 +200,30 @@ export default function OpeningIntro({ onComplete }: OpeningIntroProps) {
       <audio ref={audioRef} src={INTRO_AUDIO_SRC} preload="auto" aria-hidden="true" />
 
       {videoReady ? (
-        <video
-          ref={videoRef}
-          className={`openingIntro__video ${phase === 'video' ? 'openingIntro__video--visible' : ''}`}
-          src={videoSrc}
-          playsInline
-          preload="auto"
-          muted
-          onEnded={() => setPhase('closing-still')}
-          onError={() => setPhase('closing-still')}
-        />
+        <>
+          <video
+            ref={videoBackdropRef}
+            className={`openingIntro__videoBackdrop ${
+              phase === 'video' ? 'openingIntro__videoBackdrop--visible' : ''
+            }`}
+            src={videoSrc}
+            playsInline
+            preload="metadata"
+            muted
+            aria-hidden="true"
+            tabIndex={-1}
+          />
+          <video
+            ref={videoRef}
+            className={`openingIntro__video ${phase === 'video' ? 'openingIntro__video--visible' : ''}`}
+            src={videoSrc}
+            playsInline
+            preload="auto"
+            muted
+            onEnded={() => setPhase('closing-still')}
+            onError={() => setPhase('closing-still')}
+          />
+        </>
       ) : null}
 
       {phase === 'curtain' ? (

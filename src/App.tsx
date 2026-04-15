@@ -458,6 +458,16 @@ const LANGUAGE_NATIVE_LABELS: Record<LanguageMode, string> = {
   arabic: 'العربية',
 };
 
+const LANGUAGE_CARD_IMAGES: Record<LanguageMode, string> = {
+  hebrew: '/backgrounds/mosaic1.png',
+  arabic: '/backgrounds/mosaic2.png',
+};
+
+const LANGUAGE_CARD_TAGLINES: Record<LanguageMode, string> = {
+  hebrew: 'Play with Hebrew roots',
+  arabic: 'Play with Arabic roots',
+};
+
 const LANGUAGE_DESCRIPTIONS: Record<LanguageMode, string> = {
   hebrew: 'Hebrew roots with Hebrew script and transliteration support.',
   arabic: 'Arabic roots with Arabic script input and keyboard hints.',
@@ -786,6 +796,7 @@ function GameApp() {
   const [bonusWindowMs, setBonusWindowMs] = useState(DEFAULT_BONUS_WINDOW_MS);
   const [controlWindowMs, setControlWindowMs] = useState(DEFAULT_CONTROL_WINDOW_MS);
   const [maxControlMs, setMaxControlMs] = useState(DEFAULT_MAX_CONTROL_MS);
+  const [showAdvancedSetup, setShowAdvancedSetup] = useState(false);
 
   const [serverHealthy, setServerHealthy] = useState<boolean | null>(null);
   const [loadingSession, setLoadingSession] = useState(false);
@@ -2684,6 +2695,54 @@ function GameApp() {
     bonusFlash && bonusFlashVisible && bonusFlash.comboLabel && bonusFlash.comboCount >= 2
       ? getComboBurstAnchor(bonusFlash.comboSlots)
       : null;
+  const setupTimingFields =
+    mode === 'multiplayer'
+      ? [
+          {
+            id: 'bonusBase',
+            label: 'Base bonus',
+            value: bonusBaseMs,
+            setValue: setBonusBaseMs,
+          },
+          {
+            id: 'bonusWindow',
+            label: 'Speed window',
+            value: bonusWindowMs,
+            setValue: setBonusWindowMs,
+          },
+          {
+            id: 'controlWindow',
+            label: 'Claim window',
+            value: controlWindowMs,
+            setValue: setControlWindowMs,
+          },
+          {
+            id: 'maxControl',
+            label: 'Control cap',
+            value: maxControlMs,
+            setValue: setMaxControlMs,
+          },
+        ]
+      : [
+          {
+            id: 'countdown',
+            label: 'Countdown',
+            value: countdownMs,
+            setValue: setCountdownMs,
+          },
+          {
+            id: 'bonusBase',
+            label: 'Base bonus',
+            value: bonusBaseMs,
+            setValue: setBonusBaseMs,
+          },
+          {
+            id: 'bonusWindow',
+            label: 'Speed window',
+            value: bonusWindowMs,
+            setValue: setBonusWindowMs,
+          },
+        ];
 
   return (
     <div className="relative min-h-[100dvh] overflow-hidden text-slate-900" dir="rtl">
@@ -3081,19 +3140,19 @@ function GameApp() {
               {showSetupOverlay ? (
                 <div
                   className={[
-                    'absolute inset-x-[8%] bottom-[7%] z-30 flex justify-center',
+                    'absolute inset-x-[4%] top-[4%] z-30 flex justify-center md:inset-x-[8%] md:bottom-[22%] md:top-auto',
                   ].join(' ')}
                 >
                   <div
                     className={[
-                      'w-full rounded-[2.15rem] border border-white/90 bg-white/84 p-4 text-right shadow-[0_28px_80px_-36px_rgba(15,23,42,0.78)] backdrop-blur md:p-5',
-                      showSummary ? 'max-w-3xl' : 'max-w-4xl',
+                      'w-full rounded-[2.15rem] border border-white/90 bg-white/96 p-4 text-right shadow-[0_28px_80px_-36px_rgba(15,23,42,0.78)] backdrop-blur md:bg-white/88 md:p-5',
+                      showSummary ? 'max-w-4xl' : 'max-w-5xl',
                     ].join(' ')}
                   >
                     <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                       <div>
                         <div className="text-[0.68rem] font-black uppercase tracking-[0.32em] text-slate-500">
-                          {showSummary ? (mode === 'multiplayer' ? 'Room over' : 'Round over') : mode === 'multiplayer' ? 'Create or join' : 'Press start'}
+                          {showSummary ? (mode === 'multiplayer' ? 'Room over' : 'Round over') : 'Choose your run'}
                         </div>
                         <h1 className="mt-2 font-['Suez_One'] text-2xl tracking-tight text-slate-950 md:text-3xl">
                           {showSummary
@@ -3102,76 +3161,79 @@ function GameApp() {
                               : activeSession?.status === 'completed'
                                 ? 'Target reached'
                                 : 'Spin again'
-                            : 'שורשים בזרימה'}
+                            : 'Pick a root world'}
                         </h1>
-                        <p className="mt-1 max-w-xl text-sm leading-6 text-slate-600">
+                        <p className="mt-1 max-w-xl text-sm leading-6 text-slate-600" dir="ltr">
                           {showSummary
                             ? formatReason(activeSession?.reason) || (mode === 'multiplayer' ? 'The room is over.' : 'The round is over.')
                             : mode === 'multiplayer'
                               ? 'Share a room code. The first valid root claims control, and streaks stretch that control window.'
-                              : 'Three live roots inside one mosaic. Find fresh roots fast.'}
+                              : 'Choose a language, press start, then chase fresh roots.'}
                         </p>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          className={[
-                            'rounded-full px-4 py-2 text-sm font-black transition',
-                            mode === 'survival'
-                              ? 'bg-slate-950 text-white'
-                              : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50',
-                          ].join(' ')}
-                          onClick={() => setMode('survival')}
-                        >
-                          Survival
-                        </button>
-                        <button
-                          type="button"
-                          className={[
-                            'rounded-full px-4 py-2 text-sm font-black transition',
-                            mode === 'journey'
-                              ? 'bg-slate-950 text-white'
-                              : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50',
-                          ].join(' ')}
-                          onClick={() => setMode('journey')}
-                        >
-                          Journey
-                        </button>
-                        <button
-                          type="button"
-                          className={[
-                            'rounded-full px-4 py-2 text-sm font-black transition',
-                            mode === 'multiplayer'
-                              ? 'bg-slate-950 text-white'
-                              : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50',
-                          ].join(' ')}
-                          onClick={() => setMode('multiplayer')}
-                        >
-                          Multiplayer
-                        </button>
+                      <div className="flex flex-wrap items-center gap-2" dir="ltr" aria-label="Game mode">
+                        {(['multiplayer', 'journey', 'survival'] as PlayMode[]).map((candidateMode) => (
+                          <button
+                            key={candidateMode}
+                            type="button"
+                            className={[
+                              'rounded-full px-4 py-2 text-sm font-black transition',
+                              mode === candidateMode
+                                ? 'bg-slate-950 text-white'
+                                : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50',
+                            ].join(' ')}
+                            onClick={() => setMode(candidateMode)}
+                          >
+                            {candidateMode === 'multiplayer'
+                              ? 'Multiplayer'
+                              : candidateMode === 'journey'
+                                ? 'Journey'
+                                : 'Survival'}
+                          </button>
+                        ))}
+                        {mode !== 'multiplayer' ? (
+                          <>
+                            <button
+                              id="advanced-settings-toggle"
+                              type="button"
+                              aria-expanded={showAdvancedSetup}
+                              aria-controls="advanced-settings-panel"
+                              onClick={() => setShowAdvancedSetup((prev) => !prev)}
+                              className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-700 transition hover:bg-slate-50"
+                            >
+                              {showAdvancedSetup ? 'Hide settings' : 'Tune settings'}
+                            </button>
+                            <button
+                              id="start-btn"
+                              type="button"
+                              onClick={startSession}
+                              disabled={loadingSession}
+                              className="rounded-full bg-slate-950 px-5 py-2 text-sm font-black text-white shadow-[0_16px_44px_-24px_rgba(15,23,42,0.88)] transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+                            >
+                              {loadingSession ? 'Starting...' : session ? 'Play again' : 'Start run'}
+                            </button>
+                          </>
+                        ) : null}
                       </div>
                     </div>
 
-                    <div className="mt-4 rounded-[1.7rem] border border-slate-200/90 bg-[linear-gradient(135deg,rgba(255,255,255,0.98)_0%,rgba(241,245,249,0.9)_100%)] p-4 shadow-[0_20px_56px_-38px_rgba(15,23,42,0.38)]">
+                    <div className="mt-4">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
                           <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
                             Root language
                           </div>
-                          <div className="mt-2 text-sm font-bold text-slate-950">
-                            Choose Hebrew or Arabic before the next run.
+                          <div className="mt-1 text-sm font-bold text-slate-950">
+                            Pick the alphabet for this run.
                           </div>
-                          <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600">
-                            The root graph, keyboard hints, suggestions, and sample inputs switch together.
-                          </p>
                         </div>
-                        <span className="rounded-full border border-white/80 bg-white/88 px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.2em] text-slate-500">
-                          {showSummary ? 'Switch for the next round' : 'Visible choice, saved locally'}
+                        <span className="rounded-full border border-white/80 bg-white/88 px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.2em] text-slate-500" dir="ltr">
+                          {showSummary ? 'Next round' : 'Saved locally'}
                         </span>
                       </div>
 
-                      <div className="mt-4 grid gap-3 md:grid-cols-2">
+                      <div className="mt-3 grid grid-cols-2 gap-3" dir="ltr">
                         {(['hebrew', 'arabic'] as LanguageMode[]).map((candidateLanguage) => {
                           const isSelected = activeLanguageMode === candidateLanguage;
                           const isHebrew = candidateLanguage === 'hebrew';
@@ -3182,92 +3244,139 @@ function GameApp() {
                               type="button"
                               aria-pressed={isSelected}
                               className={[
-                                'rounded-[1.45rem] border px-4 py-4 text-right transition',
+                                'group relative min-h-[7.25rem] overflow-hidden rounded-[1.35rem] border p-0 text-right transition sm:min-h-[8.25rem]',
                                 isSelected
                                   ? 'border-slate-950 bg-slate-950 text-white shadow-[0_24px_60px_-30px_rgba(15,23,42,0.9)]'
                                   : isHebrew
-                                    ? 'border-sky-200 bg-[linear-gradient(135deg,rgba(240,249,255,0.98)_0%,rgba(255,255,255,0.98)_100%)] text-slate-900 hover:-translate-y-0.5 hover:border-sky-300'
-                                    : 'border-amber-200 bg-[linear-gradient(135deg,rgba(255,251,235,0.98)_0%,rgba(255,255,255,0.98)_100%)] text-slate-900 hover:-translate-y-0.5 hover:border-amber-300',
+                                    ? 'border-sky-200 bg-sky-50 text-slate-900 hover:-translate-y-0.5 hover:border-sky-300'
+                                    : 'border-amber-200 bg-amber-50 text-slate-900 hover:-translate-y-0.5 hover:border-amber-300',
                               ].join(' ')}
                               onClick={() => changeLanguageMode(candidateLanguage)}
                             >
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div
+                              <img
+                                src={LANGUAGE_CARD_IMAGES[candidateLanguage]}
+                                alt=""
+                                aria-hidden="true"
+                                className={[
+                                  'absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-[1.03]',
+                                  isSelected ? 'opacity-[0.48]' : 'opacity-[0.24]',
+                                ].join(' ')}
+                              />
+                              <div
+                                className={[
+                                  'absolute inset-0',
+                                  isSelected
+                                    ? 'bg-slate-950/62'
+                                    : isHebrew
+                                      ? 'bg-[linear-gradient(135deg,rgba(240,249,255,0.94),rgba(255,255,255,0.82))]'
+                                      : 'bg-[linear-gradient(135deg,rgba(255,251,235,0.94),rgba(255,255,255,0.82))]',
+                                ].join(' ')}
+                              />
+
+                              <div className="relative flex h-full min-h-[7.25rem] flex-col justify-between p-3 sm:min-h-[8.25rem]">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div
+                                      className={[
+                                        'text-[0.62rem] font-black uppercase tracking-[0.24em]',
+                                        isSelected
+                                          ? 'text-white/72'
+                                          : isHebrew
+                                            ? 'text-sky-700'
+                                            : 'text-amber-700',
+                                      ].join(' ')}
+                                      dir="ltr"
+                                    >
+                                      {LANGUAGE_CARD_TAGLINES[candidateLanguage]}
+                                    </div>
+                                    <div className="mt-1.5 text-[1.55rem] font-black leading-none tracking-tight sm:text-[1.9rem]" dir="rtl">
+                                      {LANGUAGE_NATIVE_LABELS[candidateLanguage]}
+                                    </div>
+                                    <div
+                                      className={[
+                                        'mt-1.5 hidden text-sm font-semibold leading-5 sm:block',
+                                        isSelected ? 'text-white/82' : 'text-slate-700',
+                                      ].join(' ')}
+                                    >
+                                      {LANGUAGE_DESCRIPTIONS[candidateLanguage]}
+                                    </div>
+                                  </div>
+
+                                  <span
                                     className={[
-                                      'text-[0.64rem] font-black uppercase tracking-[0.24em]',
+                                      'rounded-full px-3 py-1.5 text-[0.62rem] font-black uppercase tracking-[0.18em]',
                                       isSelected
-                                        ? 'text-white/68'
-                                        : isHebrew
-                                          ? 'text-sky-700'
-                                          : 'text-amber-700',
-                                    ].join(' ')}
-                                    dir="ltr"
-                                  >
-                                    {LANGUAGE_LABELS[candidateLanguage]}
-                                  </div>
-                                  <div className="mt-2 text-[1.65rem] font-black tracking-tight" dir="rtl">
-                                    {LANGUAGE_NATIVE_LABELS[candidateLanguage]}
-                                  </div>
-                                  <div
-                                    className={[
-                                      'mt-1 text-sm font-semibold leading-6',
-                                      isSelected ? 'text-white/78' : 'text-slate-600',
+                                        ? 'border border-white/22 bg-white/14 text-white'
+                                        : 'border border-white/80 bg-white/84 text-slate-600',
                                     ].join(' ')}
                                   >
-                                    {LANGUAGE_DESCRIPTIONS[candidateLanguage]}
-                                  </div>
+                                    {isSelected ? 'Selected' : 'Choose'}
+                                  </span>
                                 </div>
 
-                                <span
-                                  className={[
-                                    'rounded-full px-3 py-1.5 text-[0.62rem] font-black uppercase tracking-[0.18em]',
-                                    isSelected
-                                      ? 'border border-white/18 bg-white/12 text-white'
-                                      : 'border border-white/80 bg-white/84 text-slate-600',
-                                  ].join(' ')}
-                                >
-                                  {isSelected ? 'Selected' : 'Tap to choose'}
-                                </span>
-                              </div>
-
-                              <div className="mt-4 flex flex-wrap gap-2 text-[0.64rem] font-black uppercase tracking-[0.18em]">
-                                <span
-                                  className={[
-                                    'rounded-full px-3 py-1.5',
-                                    isSelected
-                                      ? 'border border-white/16 bg-white/10 text-white/84'
-                                      : 'border border-white/90 bg-white/88 text-slate-600',
-                                  ].join(' ')}
-                                >
-                                  Root{' '}
+                                <div className="mt-3 hidden flex-wrap gap-2 text-[0.64rem] font-black uppercase tracking-[0.18em] sm:flex">
                                   <span
-                                    className={isSelected ? 'font-mono text-white' : 'font-mono text-slate-950'}
-                                    dir="rtl"
+                                    className={[
+                                      'rounded-full px-3 py-1.5',
+                                      isSelected
+                                        ? 'border border-white/16 bg-white/10 text-white/84'
+                                        : 'border border-white/90 bg-white/88 text-slate-600',
+                                    ].join(' ')}
                                   >
-                                    {LANGUAGE_SAMPLE_ROOTS[candidateLanguage]}
+                                    Root{' '}
+                                    <span
+                                      className={isSelected ? 'font-mono text-white' : 'font-mono text-slate-950'}
+                                      dir="rtl"
+                                    >
+                                      {LANGUAGE_SAMPLE_ROOTS[candidateLanguage]}
+                                    </span>
                                   </span>
-                                </span>
-                                <span
-                                  className={[
-                                    'rounded-full px-3 py-1.5',
-                                    isSelected
-                                      ? 'border border-white/16 bg-white/10 text-white/84'
-                                      : 'border border-white/90 bg-white/88 text-slate-600',
-                                  ].join(' ')}
-                                >
-                                  Keys{' '}
                                   <span
-                                    className={isSelected ? 'font-mono text-white' : 'font-mono text-slate-950'}
-                                    dir="rtl"
+                                    className={[
+                                      'rounded-full px-3 py-1.5',
+                                      isSelected
+                                        ? 'border border-white/16 bg-white/10 text-white/84'
+                                        : 'border border-white/90 bg-white/88 text-slate-600',
+                                    ].join(' ')}
                                   >
-                                    {LANGUAGE_SAMPLE_DOTTED[candidateLanguage]}
+                                    Keys{' '}
+                                    <span
+                                      className={isSelected ? 'font-mono text-white' : 'font-mono text-slate-950'}
+                                      dir="rtl"
+                                    >
+                                      {LANGUAGE_SAMPLE_DOTTED[candidateLanguage]}
+                                    </span>
                                   </span>
-                                </span>
+                                </div>
                               </div>
                             </button>
                           );
                         })}
+                      </div>
+                    </div>
+
+                    <div id="how-to-play" className="mt-4 rounded-[1.15rem] border border-emerald-200 bg-emerald-50/88 p-3 text-right shadow-[0_16px_38px_-30px_rgba(4,120,87,0.42)]">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-emerald-700">
+                          How to play
+                        </div>
+                        <span className="rounded-full border border-white/80 bg-white/78 px-3 py-1 text-[0.62rem] font-black uppercase tracking-[0.18em] text-emerald-700" dir="ltr">
+                          Make real roots before zero
+                        </span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-2 text-[0.78rem] font-bold leading-5 text-slate-700 md:grid-cols-4" dir="ltr">
+                        <div>
+                          <span className="font-black text-emerald-700">1.</span> Tap a reel.
+                        </div>
+                        <div>
+                          <span className="font-black text-emerald-700">2.</span> Type or pick a {LANGUAGE_LABELS[activeLanguageMode]} letter.
+                        </div>
+                        <div>
+                          <span className="font-black text-emerald-700">3.</span> Drag reels to swap.
+                        </div>
+                        <div>
+                          <span className="font-black text-emerald-700">4.</span> No repeats. Streaks add time.
+                        </div>
                       </div>
                     </div>
 
@@ -3389,60 +3498,28 @@ function GameApp() {
                           </label>
                         </div>
 
-                        <div className="mt-3 grid gap-3 md:grid-cols-4">
-                          {[
-                            {
-                              id: 'bonusBase',
-                              label: 'Base bonus',
-                              value: bonusBaseMs,
-                              setValue: setBonusBaseMs,
-                            },
-                            {
-                              id: 'bonusWindow',
-                              label: 'Speed window',
-                              value: bonusWindowMs,
-                              setValue: setBonusWindowMs,
-                            },
-                            {
-                              id: 'controlWindow',
-                              label: 'Claim window',
-                              value: controlWindowMs,
-                              setValue: setControlWindowMs,
-                            },
-                            {
-                              id: 'maxControl',
-                              label: 'Control cap',
-                              value: maxControlMs,
-                              setValue: setMaxControlMs,
-                            },
-                          ].map((field) => (
-                            <label
-                              key={field.id}
-                              htmlFor={field.id}
-                              className="rounded-[1.4rem] border border-slate-200 bg-slate-50 px-4 py-3"
-                            >
-                              <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
-                                {field.label}
-                              </div>
-                              <div className="mt-2 flex items-end gap-2">
-                                <input
-                                  id={field.id}
-                                  type="number"
-                                  min={1}
-                                  step={1}
-                                  value={Math.round(field.value / 1000)}
-                                  onChange={(event) => {
-                                    const nextSeconds = Number(event.target.value);
-                                    if (!Number.isFinite(nextSeconds)) return;
-                                    field.setValue(Math.max(1, Math.round(nextSeconds)) * 1000);
-                                  }}
-                                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left font-mono text-xl font-black text-slate-950 outline-none transition focus:border-sky-400"
-                                  dir="ltr"
-                                />
-                                <span className="pb-3 text-sm font-black text-slate-500">sec</span>
-                              </div>
-                            </label>
-                          ))}
+                        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                          <div className="flex flex-wrap gap-2">
+                            {setupTimingFields.map((field) => (
+                              <span
+                                key={`summary-${field.id}`}
+                                className="rounded-full border border-white/80 bg-white/78 px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.18em] text-slate-600"
+                                dir="ltr"
+                              >
+                                {field.label} {Math.round(field.value / 1000)}s
+                              </span>
+                            ))}
+                          </div>
+                          <button
+                            id="advanced-settings-toggle"
+                            type="button"
+                            aria-expanded={showAdvancedSetup}
+                            aria-controls="advanced-settings-panel"
+                            onClick={() => setShowAdvancedSetup((prev) => !prev)}
+                            className="rounded-full border border-slate-200 bg-white px-4 py-2 text-[0.72rem] font-black uppercase tracking-[0.2em] text-slate-700 transition hover:bg-slate-50"
+                          >
+                            {showAdvancedSetup ? 'Hide settings' : 'Tune settings'}
+                          </button>
                         </div>
 
                         <div className="mt-3 flex flex-wrap gap-3">
@@ -3467,38 +3544,39 @@ function GameApp() {
                         </div>
                       </>
                     ) : (
-                      <div className="mt-4 grid gap-3 md:grid-cols-[repeat(3,minmax(0,1fr))_auto]">
-                        {[
-                          {
-                            id: 'countdown',
-                            label: 'Countdown',
-                            value: countdownMs,
-                            setValue: setCountdownMs,
-                          },
-                          {
-                            id: 'bonusBase',
-                            label: 'Base bonus',
-                            value: bonusBaseMs,
-                            setValue: setBonusBaseMs,
-                          },
-                          {
-                            id: 'bonusWindow',
-                            label: 'Speed window',
-                            value: bonusWindowMs,
-                            setValue: setBonusWindowMs,
-                          },
-                        ].map((field) => (
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        {setupTimingFields.map((field) => (
+                          <span
+                            key={`summary-${field.id}`}
+                            className="rounded-full border border-white/80 bg-white/78 px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.18em] text-slate-600"
+                            dir="ltr"
+                          >
+                            {field.label} {Math.round(field.value / 1000)}s
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {showAdvancedSetup ? (
+                      <div
+                        id="advanced-settings-panel"
+                        className={[
+                          'mt-3 grid gap-3',
+                          mode === 'multiplayer' ? 'md:grid-cols-4' : 'md:grid-cols-3',
+                        ].join(' ')}
+                      >
+                        {setupTimingFields.map((field) => (
                           <label
                             key={field.id}
-                            htmlFor={field.id}
-                            className="rounded-[1.4rem] border border-slate-200 bg-slate-50 px-4 py-3"
+                            htmlFor={`setup-${field.id}`}
+                            className="rounded-[1.15rem] border border-slate-200 bg-slate-50 px-4 py-3"
                           >
                             <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
                               {field.label}
                             </div>
                             <div className="mt-2 flex items-end gap-2">
                               <input
-                                id={field.id}
+                                id={`setup-${field.id}`}
                                 type="number"
                                 min={1}
                                 step={1}
@@ -3508,24 +3586,15 @@ function GameApp() {
                                   if (!Number.isFinite(nextSeconds)) return;
                                   field.setValue(Math.max(1, Math.round(nextSeconds)) * 1000);
                                 }}
-                                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left font-mono text-xl font-black text-slate-950 outline-none transition focus:border-sky-400"
+                                className="w-full rounded-[0.9rem] border border-slate-200 bg-white px-4 py-3 text-left font-mono text-xl font-black text-slate-950 outline-none transition focus:border-sky-400"
                                 dir="ltr"
                               />
                               <span className="pb-3 text-sm font-black text-slate-500">sec</span>
                             </div>
                           </label>
                         ))}
-                        <button
-                          id="start-btn"
-                          type="button"
-                          onClick={startSession}
-                          disabled={loadingSession}
-                          className="rounded-[1.5rem] bg-slate-950 px-6 py-4 text-lg font-black text-white shadow-[0_20px_60px_-28px_rgba(15,23,42,0.88)] transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
-                        >
-                          {loadingSession ? 'Starting...' : session ? 'Play again' : 'Start run'}
-                        </button>
                       </div>
-                    )}
+                    ) : null}
 
                     {!showSummary ? (
                       <p className="mt-3 text-sm leading-6 text-slate-600">

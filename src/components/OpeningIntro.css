@@ -7,8 +7,19 @@
   background: #0f0806;
 }
 
+.openingIntro::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 420ms ease;
+}
+
 .openingIntro__still,
-.openingIntro__video {
+.openingIntro__video,
+.openingIntro__videoBackdrop {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -23,8 +34,17 @@
 }
 
 .openingIntro__video {
-  z-index: 1;
+  z-index: 2;
   opacity: 0;
+  transition: opacity 420ms ease;
+}
+
+.openingIntro__videoBackdrop {
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(1.08);
+  filter: blur(26px) saturate(1.05) brightness(0.74);
   transition: opacity 420ms ease;
 }
 
@@ -89,6 +109,44 @@
   transform: translateY(-114%) scale(1.04);
   opacity: 0;
   filter: blur(45px);
+}
+
+@media (orientation: portrait) and (max-aspect-ratio: 4 / 5) {
+  .openingIntro {
+    background:
+      radial-gradient(circle at 50% 32%, rgba(248, 218, 167, 0.16), transparent 46%),
+      linear-gradient(180deg, #170a07 0%, #080403 100%);
+  }
+
+  .openingIntro--opening-still .openingIntro__still,
+  .openingIntro--closing-still .openingIntro__still {
+    object-fit: contain;
+    object-position: center;
+  }
+
+  .openingIntro--video::after {
+    opacity: 1;
+    background:
+      linear-gradient(180deg, rgba(8, 4, 3, 0.24) 0%, transparent 28%, transparent 72%, rgba(8, 4, 3, 0.34) 100%),
+      radial-gradient(ellipse at center, transparent 46%, rgba(8, 4, 3, 0.24) 100%);
+  }
+
+  .openingIntro--video .openingIntro__still {
+    object-fit: cover;
+    filter: blur(22px) saturate(0.86) brightness(0.44);
+    transform: scale(1.08);
+  }
+
+  .openingIntro__videoBackdrop--visible {
+    opacity: 0.92;
+  }
+
+  .openingIntro__video {
+    object-fit: contain;
+    object-position: center;
+    background: transparent;
+    filter: drop-shadow(0 24px 48px rgba(0, 0, 0, 0.42));
+  }
 }
 
 @keyframes openingIntroPulse {
