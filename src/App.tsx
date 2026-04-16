@@ -3358,18 +3358,50 @@ function GameApp() {
                             Valid roots only
                           </span>
                         </div>
-                        <div className="mt-1 grid grid-cols-2 gap-2 text-[0.78rem] font-bold leading-5 text-slate-700 sm:mt-2 md:grid-cols-4" dir="ltr">
-                          <div>
-                            <span className="font-black text-emerald-700">1.</span> Tap a reel.
+
+                        <div className="mt-2 grid grid-cols-1 gap-2 sm:mt-3 sm:grid-cols-2" dir="ltr">
+                          {/* Goal */}
+                          <div className="rounded-[0.75rem] border border-emerald-100 bg-white/80 px-3 py-2 sm:col-span-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-lg" aria-hidden="true">🎯</span>
+                              <span className="text-[0.66rem] font-black uppercase tracking-[0.2em] text-emerald-700">Goal</span>
+                            </div>
+                            <p className="mt-1 text-[0.78rem] font-bold leading-5 text-slate-700">
+                              Advance from one valid root to another. Each move must produce a real {activeLanguageMode === 'arabic' ? 'Arabic' : 'Hebrew'} root — invalid attempts are rejected. Chain moves before the timer runs out!
+                            </p>
                           </div>
-                          <div>
-                            <span className="font-black text-emerald-700">2.</span> Replace one letter.
+
+                          {/* Replace */}
+                          <div className="rounded-[0.75rem] border border-emerald-100 bg-white/80 px-3 py-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-lg" aria-hidden="true">⌨️</span>
+                              <span className="text-[0.66rem] font-black uppercase tracking-[0.2em] text-emerald-700">Replace a letter</span>
+                            </div>
+                            <p className="mt-1 text-[0.78rem] font-bold leading-5 text-slate-700">
+                              <span className="font-black text-emerald-700">Tap</span> a reel to select it, then <span className="font-black text-emerald-700">type</span> a letter on your keyboard. The letter on that reel is replaced — if the new combination is a valid root, the move is accepted.
+                            </p>
                           </div>
-                          <div>
-                            <span className="font-black text-emerald-700">3.</span> Or drag to swap.
+
+                          {/* Swap */}
+                          <div className="rounded-[0.75rem] border border-emerald-100 bg-white/80 px-3 py-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-lg" aria-hidden="true">🔀</span>
+                              <span className="text-[0.66rem] font-black uppercase tracking-[0.2em] text-emerald-700">Swap two letters</span>
+                            </div>
+                            <p className="mt-1 text-[0.78rem] font-bold leading-5 text-slate-700">
+                              <span className="font-black text-emerald-700">Drag</span> one reel onto another to swap their positions. If the rearranged letters form a valid root, the swap is accepted. Swaps score higher than replacements!
+                            </p>
                           </div>
-                          <div>
-                            <span className="font-black text-emerald-700">4.</span> Real root or no score.
+
+                          {/* Tips */}
+                          <div className="rounded-[0.75rem] border border-emerald-100 bg-white/80 px-3 py-2 sm:col-span-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-lg" aria-hidden="true">⚡</span>
+                              <span className="text-[0.66rem] font-black uppercase tracking-[0.2em] text-emerald-700">Scoring tips</span>
+                            </div>
+                            <p className="mt-1 text-[0.78rem] font-bold leading-5 text-slate-700">
+                              Move fast for speed bonuses. Chain consecutive swaps or same-position replacements for combos. Build a streak of valid roots to unlock higher score and time multipliers — but one miss resets the streak!
+                            </p>
                           </div>
                         </div>
                       </div>
