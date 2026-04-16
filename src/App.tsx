@@ -239,6 +239,14 @@ type AttemptFlash = {
   streakTierLabel: string | null;
 };
 
+type MobileRewardFeedback = {
+  tone: 'bonus' | 'combo' | 'blocked' | 'repeat';
+  eyebrow: string;
+  primary: string;
+  secondary: string;
+  visible: boolean;
+};
+
 type RootSuggestionStatus = 'pending' | 'approved' | 'rejected';
 
 type RootSuggestion = {
@@ -459,8 +467,8 @@ const LANGUAGE_NATIVE_LABELS: Record<LanguageMode, string> = {
 };
 
 const LANGUAGE_CARD_IMAGES: Record<LanguageMode, string> = {
-  hebrew: '/backgrounds/mosaic1.png',
-  arabic: '/backgrounds/mosaic2.png',
+  hebrew: '/backgrounds/language-hebrew.png',
+  arabic: '/backgrounds/language-arabic.png',
 };
 
 const LANGUAGE_CARD_TAGLINES: Record<LanguageMode, string> = {
@@ -478,22 +486,17 @@ const LANGUAGE_EXAMPLE_MOVES: Record<
   }
 > = {
   hebrew: {
-    fromRoot: 'brq',
-    toRoot: 'brk',
+    fromRoot: 'brk',
+    toRoot: 'drk',
     action: 'Replace one letter',
-    note: 'Both roots are valid, so the move counts.',
+    note: 'Both roots are real. Only one letter changed.',
   },
   arabic: {
-    fromRoot: 'علم',
-    toRoot: 'عمل',
-    action: 'Swap two letters',
-    note: 'A swap is allowed only when the new root is real.',
+    fromRoot: 'كتب',
+    toRoot: 'كسب',
+    action: 'Replace one letter',
+    note: 'Both roots are real. Only one letter changed.',
   },
-};
-
-const LANGUAGE_DESCRIPTIONS: Record<LanguageMode, string> = {
-  hebrew: 'Hebrew roots with Hebrew script and transliteration support.',
-  arabic: 'Arabic roots with Arabic script input and keyboard hints.',
 };
 
 const LANGUAGE_SAMPLE_ROOTS: Record<LanguageMode, string> = {
@@ -515,6 +518,42 @@ const formatElapsed = (ms: number) => {
   if (!Number.isFinite(ms)) return '0s';
   if (ms < 1000) return `${ms}ms`;
   return formatSeconds(ms);
+};
+
+const getMobileRewardFeedback = (
+  bonusFlash: BonusFlash | null,
+  bonusFlashVisible: boolean,
+  attemptFlash: AttemptFlash | null,
+  attemptFlashVisible: boolean,
+): MobileRewardFeedback | null => {
+  if (attemptFlash) {
+    return {
+      tone: attemptFlash.tone === 'repeat' ? 'repeat' : 'blocked',
+      eyebrow: attemptFlash.tone === 'repeat' ? 'Again' : 'Blocked',
+      primary: 'No score',
+      secondary: attemptFlash.streakResetFrom > 0 ? `streak x${attemptFlash.streakResetFrom} reset` : 'keep playing',
+      visible: attemptFlashVisible,
+    };
+  }
+
+  if (!bonusFlash) return null;
+
+  const comboActive = Boolean(bonusFlash.comboLabel && bonusFlash.comboCount >= 2);
+  const secondaryParts = [`+${bonusFlash.scoreGain} score`];
+  if (bonusFlash.streakAfterMove > 0) {
+    secondaryParts.push(`x${bonusFlash.streakAfterMove}`);
+  }
+  if (comboActive) {
+    secondaryParts.push(`${bonusFlash.comboLabel} x${bonusFlash.comboCount}`);
+  }
+
+  return {
+    tone: comboActive ? 'combo' : 'bonus',
+    eyebrow: comboActive ? 'Combo' : bonusFlash.streakAfterMove > 1 ? 'Streak' : 'Bonus',
+    primary: `+${formatSeconds(bonusFlash.bonusMs)}`,
+    secondary: secondaryParts.join(' · '),
+    visible: bonusFlashVisible,
+  };
 };
 
 const getSlotLabel = (index: number | null | undefined) => {
@@ -2477,6 +2516,10 @@ function GameApp() {
 
   useEffect(() => {
     const neighborSample = [...neighborsSet].slice(0, 12);
+    const compactTouchFeedback = activeSession?.status === 'active' && prefersTouchInput;
+    const activeMobileFeedback = compactTouchFeedback
+      ? getMobileRewardFeedback(bonusFlash, bonusFlashVisible, attemptFlash, attemptFlashVisible)
+      : null;
     const activeBonus = bonusFlash
         ? {
           bonusMs: bonusFlash.bonusMs,
@@ -2492,7 +2535,7 @@ function GameApp() {
           comboBonusMs: bonusFlash.comboBonusMs,
           streakAfterMove: bonusFlash.streakAfterMove,
           comboSlots: bonusFlash.comboSlots,
-          visible: bonusFlashVisible,
+          visible: bonusFlashVisible && !compactTouchFeedback,
         }
       : null;
     const activeAttempt = attemptFlash
@@ -2502,12 +2545,12 @@ function GameApp() {
           root: attemptFlash.root,
           streakResetFrom: attemptFlash.streakResetFrom,
           streakTierLabel: attemptFlash.streakTierLabel,
-          visible: attemptFlashVisible,
+          visible: attemptFlashVisible && !compactTouchFeedback,
         }
       : null;
     const activeMotion = {
-      reelFx,
-      timerBurstActive,
+      reelFx: compactTouchFeedback ? null : reelFx,
+      timerBurstActive: timerBurstActive && !compactTouchFeedback,
     };
 
     window.render_game_to_text = () =>
@@ -2585,7 +2628,8 @@ function GameApp() {
         },
         bonusFlash: activeBonus,
         attemptFlash: activeAttempt,
-        streakPulse: activeStreakPulse,
+        mobileFeedback: activeMobileFeedback,
+        streakPulse: compactTouchFeedback ? null : activeStreakPulse,
         motion: activeMotion,
         journeySolution: journeySolutionRequest
           ? {
@@ -2614,6 +2658,8 @@ function GameApp() {
           },
           keyboardSwitchHint: keyboardSwitchGuide.hint,
           prefersTouchInput,
+          touchFeedbackMode: compactTouchFeedback ? 'compact' : 'full',
+          touchFeedbackSuppressed: false,
           loadingSession,
           submittingMove,
           infoText: infoText || null,
@@ -2688,6 +2734,15 @@ function GameApp() {
   const visitedCountValue = activeSession?.visitedCount ?? 0;
   const runStatus = activeSession?.status ?? 'idle';
   const isActive = runStatus === 'active';
+  const compactTouchFeedback = isActive && prefersTouchInput;
+  const mobileRewardFeedback = compactTouchFeedback
+    ? getMobileRewardFeedback(bonusFlash, bonusFlashVisible, attemptFlash, attemptFlashVisible)
+    : null;
+  const visibleBonusFlash = Boolean(bonusFlash && bonusFlashVisible && !compactTouchFeedback);
+  const visibleAttemptFlash = Boolean(attemptFlash && attemptFlashVisible && !compactTouchFeedback);
+  const visibleReelFx = compactTouchFeedback ? null : reelFx;
+  const visibleTimerBurstActive = timerBurstActive && !compactTouchFeedback;
+  const visibleStreakPulse = compactTouchFeedback ? null : activeStreakPulse;
   const displayRemainingMs = activeSession ? remainingMs : mode === 'multiplayer' ? controlWindowMs : countdownMs;
   const displayTimerPct = activeSession ? timerPct : 100;
   const timerToneClass =
@@ -2729,10 +2784,19 @@ function GameApp() {
   const setupNeedsLanguageChoice = Boolean(showSetupOverlay && !showSummary && setupStage === 'language');
   const showJourneyFailureSolution = Boolean(showSummary && journeySolutionRequest);
   const activeComboBurst =
-    bonusFlash && bonusFlashVisible && bonusFlash.comboLabel && bonusFlash.comboCount >= 2
+    visibleBonusFlash && bonusFlash?.comboLabel && bonusFlash.comboCount >= 2
       ? getComboBurstAnchor(bonusFlash.comboSlots)
       : null;
   const activeExampleMove = LANGUAGE_EXAMPLE_MOVES[activeLanguageMode];
+  const activeExampleFromDisplay = toDisplayPlainRoot(activeExampleMove.fromRoot, activeTransliteration);
+  const activeExampleToDisplay = toDisplayPlainRoot(activeExampleMove.toRoot, activeTransliteration);
+  const activeExampleFromChars = Array.from(activeExampleFromDisplay);
+  const activeExampleToChars = Array.from(activeExampleToDisplay);
+  const activeExampleChangedSlots = new Set(
+    activeExampleFromChars
+      .map((char, index) => (char !== activeExampleToChars[index] ? index : -1))
+      .filter((index) => index >= 0),
+  );
   const setupTimingFields =
     mode === 'multiplayer'
       ? [
@@ -2788,63 +2852,85 @@ function GameApp() {
       <div className="pointer-events-none absolute left-[-12%] top-8 h-72 w-72 rounded-full bg-sky-300/30 blur-3xl motion-safe:animate-[floaty_18s_ease-in-out_infinite]" />
       <div className="pointer-events-none absolute right-[-10%] top-36 h-80 w-80 rounded-full bg-amber-300/25 blur-3xl motion-safe:animate-[floaty_22s_ease-in-out_infinite_reverse]" />
 
-      <BonusToast
-        bonusMs={bonusFlash?.bonusMs ?? 0}
-        multiplier={bonusFlash?.multiplier ?? 1}
-        elapsedMs={bonusFlash?.elapsedMs ?? 0}
-        scoreGain={bonusFlash?.scoreGain ?? 0}
-        moveType={bonusFlash?.moveType ?? null}
-        comboLabel={bonusFlash?.comboLabel ?? null}
-        comboCount={bonusFlash?.comboCount ?? 0}
-        chainBonusScore={bonusFlash?.chainBonusScore ?? 0}
-        streakBonusScore={bonusFlash?.streakBonusScore ?? 0}
-        streakBonusMs={bonusFlash?.streakBonusMs ?? 0}
-        comboBonusMs={bonusFlash?.comboBonusMs ?? 0}
-        streakAfterMove={bonusFlash?.streakAfterMove ?? 0}
-        visible={Boolean(bonusFlash && bonusFlashVisible)}
-      />
+      {!compactTouchFeedback ? (
+        <BonusToast
+          bonusMs={bonusFlash?.bonusMs ?? 0}
+          multiplier={bonusFlash?.multiplier ?? 1}
+          elapsedMs={bonusFlash?.elapsedMs ?? 0}
+          scoreGain={bonusFlash?.scoreGain ?? 0}
+          moveType={bonusFlash?.moveType ?? null}
+          comboLabel={bonusFlash?.comboLabel ?? null}
+          comboCount={bonusFlash?.comboCount ?? 0}
+          chainBonusScore={bonusFlash?.chainBonusScore ?? 0}
+          streakBonusScore={bonusFlash?.streakBonusScore ?? 0}
+          streakBonusMs={bonusFlash?.streakBonusMs ?? 0}
+          comboBonusMs={bonusFlash?.comboBonusMs ?? 0}
+          streakAfterMove={bonusFlash?.streakAfterMove ?? 0}
+          visible={visibleBonusFlash}
+        />
+      ) : null}
 
-      <div
-        className={[
-          'pointer-events-none fixed bottom-[calc(env(safe-area-inset-bottom)+5.4rem)] left-1/2 z-40 w-[min(92vw,22rem)] -translate-x-1/2 transition-all duration-300 sm:bottom-auto sm:top-44 sm:w-auto md:top-48',
-          attemptFlashVisible ? 'translate-y-0 opacity-100 scale-100' : '-translate-y-3 opacity-0 scale-95',
-        ].join(' ')}
-        aria-live="polite"
-      >
-        {attemptFlash ? (
-          <div
-            className={[
-              'overflow-hidden rounded-[1.2rem] border px-4 py-3 text-sm font-black shadow-[0_18px_48px_-28px_rgba(15,23,42,0.7)] backdrop-blur',
-              attemptFlash.tone === 'repeat'
-                ? 'border-amber-200 bg-amber-50/95 text-amber-800'
-                : 'border-rose-200 bg-rose-50/96 text-rose-700',
-            ].join(' ')}
-          >
-            <div className="flex flex-wrap items-center justify-center gap-2 text-[0.62rem] uppercase tracking-[0.22em] opacity-70">
-              <span>{attemptFlash.tone === 'repeat' ? 'Repeated root' : 'Blocked move'}</span>
-              {attemptFlash.streakResetFrom > 0 ? (
-                <span className="rounded-full bg-white/72 px-3 py-1 text-[0.6rem] font-black tracking-[0.2em] text-rose-700">
-                  Streak busted
-                </span>
-              ) : null}
-            </div>
-            <div className="mt-1 text-base">{attemptFlash.message}</div>
-            {attemptFlash.streakResetFrom > 0 ? (
-              <div className="mt-2 flex flex-wrap items-center justify-center gap-2 text-[0.62rem] font-black uppercase tracking-[0.18em]">
-                <span className="rounded-full bg-white/78 px-3 py-1 text-slate-900">
-                  {attemptFlash.streakTierLabel
-                    ? `${attemptFlash.streakTierLabel} x${attemptFlash.streakResetFrom}`
-                    : `x${attemptFlash.streakResetFrom}`}
-                </span>
-                <span>Back to 0</span>
+      {!compactTouchFeedback ? (
+        <div
+          className={[
+            'pointer-events-none fixed bottom-[calc(env(safe-area-inset-bottom)+5.4rem)] left-1/2 z-40 w-[min(92vw,22rem)] -translate-x-1/2 transition-all duration-300 sm:bottom-auto sm:top-44 sm:w-auto md:top-48',
+            visibleAttemptFlash ? 'translate-y-0 opacity-100 scale-100' : '-translate-y-3 opacity-0 scale-95',
+          ].join(' ')}
+          aria-live="polite"
+          dir="ltr"
+        >
+          {attemptFlash ? (
+            <div
+              className={[
+                'overflow-hidden rounded-[1.2rem] border px-4 py-3 text-sm font-black shadow-[0_18px_48px_-28px_rgba(15,23,42,0.7)] backdrop-blur',
+                attemptFlash.tone === 'repeat'
+                  ? 'border-amber-200 bg-amber-50/95 text-amber-800'
+                  : 'border-rose-200 bg-rose-50/96 text-rose-700',
+              ].join(' ')}
+            >
+              <div className="flex flex-wrap items-center justify-center gap-2 text-[0.62rem] uppercase tracking-[0.22em] opacity-70">
+                <span>{attemptFlash.tone === 'repeat' ? 'Repeated root' : 'Blocked move'}</span>
+                {attemptFlash.streakResetFrom > 0 ? (
+                  <span className="rounded-full bg-white/72 px-3 py-1 text-[0.6rem] font-black tracking-[0.2em] text-rose-700">
+                    Streak busted
+                  </span>
+                ) : null}
               </div>
-            ) : null}
-            <div className="mt-2 rounded-full bg-white/72 px-3 py-1 text-center font-mono text-sm font-black text-slate-900" dir={activeDisplayDir}>
-              {formatDisplayRoot(attemptFlash.root, activeTransliteration)}
+              <div className="mt-1 text-base">{attemptFlash.message}</div>
+              {attemptFlash.streakResetFrom > 0 ? (
+                <div className="mt-2 flex flex-wrap items-center justify-center gap-2 text-[0.62rem] font-black uppercase tracking-[0.18em]">
+                  <span className="rounded-full bg-white/78 px-3 py-1 text-slate-900">
+                    {attemptFlash.streakTierLabel
+                      ? `${attemptFlash.streakTierLabel} x${attemptFlash.streakResetFrom}`
+                      : `x${attemptFlash.streakResetFrom}`}
+                  </span>
+                  <span>Back to 0</span>
+                </div>
+              ) : null}
+              <div className="mt-2 rounded-full bg-white/72 px-3 py-1 text-center font-mono text-sm font-black text-slate-900" dir={activeDisplayDir}>
+                {formatDisplayRoot(attemptFlash.root, activeTransliteration)}
+              </div>
             </div>
-          </div>
-        ) : null}
-      </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {mobileRewardFeedback ? (
+        <div
+          id="mobile-reward-ticker"
+          className={[
+            'mobile-reward-ticker',
+            `mobile-reward-ticker--${mobileRewardFeedback.tone}`,
+            mobileRewardFeedback.visible ? 'mobile-reward-ticker--visible' : '',
+          ].join(' ')}
+          aria-live="polite"
+          dir="ltr"
+        >
+          <span className="mobile-reward-ticker__eyebrow">{mobileRewardFeedback.eyebrow}</span>
+          <strong className="mobile-reward-ticker__primary">{mobileRewardFeedback.primary}</strong>
+          <span className="mobile-reward-ticker__secondary">{mobileRewardFeedback.secondary}</span>
+        </div>
+      ) : null}
 
       <button
         id="debug-toggle-btn"
@@ -2921,7 +3007,7 @@ function GameApp() {
             <div
               className={[
                 'mt-1 text-[clamp(3rem,15vw,4.6rem)] font-black leading-none tabular-nums text-slate-950 sm:mt-2 sm:text-[clamp(3.8rem,11vw,6.6rem)]',
-                timerBurstActive ? 'timer-bonus-number' : '',
+                visibleTimerBurstActive ? 'timer-bonus-number' : '',
               ].join(' ')}
               dir="ltr"
             >
@@ -2983,12 +3069,12 @@ function GameApp() {
             <div
               className={[
                 'mosaic-stage relative mx-auto aspect-[3/2] w-full drop-shadow-[0_42px_90px_rgba(15,23,42,0.24)]',
-                reelFx === 'shake' ? 'slot-bank-shake' : '',
-                reelFx === 'spin' ? 'slot-bank-celebrate' : '',
+                visibleReelFx === 'shake' ? 'slot-bank-shake' : '',
+                visibleReelFx === 'spin' ? 'slot-bank-celebrate' : '',
               ].join(' ')}
             >
               <div className="absolute inset-0 z-0 bg-[radial-gradient(circle_at_50%_32%,rgba(247,236,204,0.78),rgba(210,186,140,0.92)_56%,rgba(148,117,79,0.94)_100%)]" />
-              {isActive && streakValue > 0 ? (
+              {isActive && streakValue > 0 && !compactTouchFeedback ? (
                 <div
                   className={[
                     'pointer-events-none absolute inset-[4%] z-[1] rounded-[2rem] opacity-70 streak-stage-wash',
@@ -3002,7 +3088,7 @@ function GameApp() {
                   className={[
                     'mx-auto w-full rounded-full border p-2 backdrop-blur-[2px]',
                     activeStreakVisual.timerShell,
-                    timerBurstActive ? 'timer-bonus-flash' : '',
+                    visibleTimerBurstActive ? 'timer-bonus-flash' : '',
                   ].join(' ')}
                 >
                   <div className="h-4 overflow-hidden rounded-full bg-slate-950/8">
@@ -3014,29 +3100,29 @@ function GameApp() {
                 </div>
               </div>
 
-              {isActive ? (
+              {isActive && !compactTouchFeedback ? (
                 <div className="pointer-events-none absolute inset-x-[4%] top-[15.8%] z-30 flex justify-center md:inset-x-auto md:right-[4.1%] md:top-[14.1%]">
                   <StreakBubble
                     streak={streakValue}
                     tier={streakTier}
                     nextTier={nextStreakTier}
                     progressPct={streakTierProgress}
-                    energized={Boolean(bonusFlash && bonusFlashVisible)}
+                    energized={visibleBonusFlash}
                     busted={Boolean(
                       attemptFlash &&
-                        attemptFlashVisible &&
+                        visibleAttemptFlash &&
                         attemptFlash.streakResetFrom > 0,
                     )}
                   />
                 </div>
               ) : null}
-              {activeStreakPulse ? (
+              {visibleStreakPulse ? (
                 <div className="pointer-events-none absolute left-[7.5%] top-[14.9%] z-[31] md:left-[10.5%] md:top-[13.8%]">
                   <StreakPulse
-                    tone={activeStreakPulse.tone}
-                    title={activeStreakPulse.title}
-                    detail={activeStreakPulse.detail}
-                    visible={activeStreakPulse.visible}
+                    tone={visibleStreakPulse.tone}
+                    title={visibleStreakPulse.title}
+                    detail={visibleStreakPulse.detail}
+                    visible={visibleStreakPulse.visible}
                   />
                 </div>
               ) : null}
@@ -3128,8 +3214,8 @@ function GameApp() {
                         variant="embedded"
                         className={[
                           'h-full w-full',
-                          reelFx === 'spin' ? `reel-spin reel-delay-${index}` : '',
-                          reelFx === 'shake' ? 'reel-shake' : '',
+                          visibleReelFx === 'spin' ? `reel-spin reel-delay-${index}` : '',
+                          visibleReelFx === 'shake' ? 'reel-shake' : '',
                         ].join(' ')}
                         onClick={() => handleCardClick(index)}
                         onPointerDown={(event) => handleCardPointerDown(index, event)}
@@ -3152,7 +3238,7 @@ function GameApp() {
                     leftPct={activeComboBurst.leftPct}
                     topPct={activeComboBurst.topPct}
                     placement={activeComboBurst.placement}
-                    visible={bonusFlashVisible}
+                    visible={visibleBonusFlash}
                   />
                 </div>
               ) : null}
@@ -3290,8 +3376,8 @@ function GameApp() {
                     ) : null}
 
                     {setupNeedsLanguageChoice ? (
-                    <div className="mt-4">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="mt-3 sm:mt-4">
+                      <div className="hidden flex-wrap items-start justify-between gap-3 sm:flex">
                         <div>
                           <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
                             First choice
@@ -3305,7 +3391,7 @@ function GameApp() {
                         </span>
                       </div>
 
-                      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2" dir="ltr">
+                      <div className="mt-2 grid grid-cols-1 gap-2 sm:mt-3 sm:grid-cols-2 sm:gap-3" dir="ltr">
                         {(['hebrew', 'arabic'] as LanguageMode[]).map((candidateLanguage) => {
                           const isHebrew = candidateLanguage === 'hebrew';
 
@@ -3313,12 +3399,13 @@ function GameApp() {
                             <button
                               key={candidateLanguage}
                               type="button"
+                              aria-label={LANGUAGE_CARD_TAGLINES[candidateLanguage]}
                               aria-pressed={false}
                               className={[
-                                'group relative min-h-[7.25rem] overflow-hidden rounded-[1.35rem] border p-0 text-right transition sm:min-h-[8.25rem]',
+                                'group relative aspect-[2/1] overflow-hidden rounded-[1.35rem] border p-0 text-right shadow-[0_18px_44px_-32px_rgba(15,23,42,0.5)] transition hover:-translate-y-0.5 hover:shadow-[0_26px_56px_-34px_rgba(15,23,42,0.62)] sm:aspect-[3/2]',
                                 isHebrew
-                                  ? 'border-sky-200 bg-sky-50 text-slate-900 hover:-translate-y-0.5 hover:border-sky-300'
-                                  : 'border-amber-200 bg-amber-50 text-slate-900 hover:-translate-y-0.5 hover:border-amber-300',
+                                  ? 'border-sky-200 bg-sky-50 text-slate-900 hover:border-sky-300'
+                                  : 'border-amber-200 bg-amber-50 text-slate-900 hover:border-amber-300',
                               ].join(' ')}
                               onClick={() => chooseSetupLanguage(candidateLanguage)}
                             >
@@ -3327,59 +3414,36 @@ function GameApp() {
                                 alt=""
                                 aria-hidden="true"
                                 className={[
-                                  'absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-[1.03]',
-                                  'opacity-[0.28]',
+                                  'absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-[1.025]',
                                 ].join(' ')}
                               />
-                              <div
-                                className={[
-                                  'absolute inset-0',
-                                  isHebrew
-                                    ? 'bg-[linear-gradient(135deg,rgba(240,249,255,0.94),rgba(255,255,255,0.82))]'
-                                    : 'bg-[linear-gradient(135deg,rgba(255,251,235,0.94),rgba(255,255,255,0.82))]',
-                                ].join(' ')}
-                              />
+                              <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(15,23,42,0.18),rgba(15,23,42,0)_32%,rgba(15,23,42,0)_62%,rgba(15,23,42,0.38))]" />
 
-                              <div className="relative flex h-full min-h-[7.25rem] flex-col justify-between p-3 sm:min-h-[8.25rem]">
+                              <div className="relative flex h-full flex-col justify-between p-3">
                                 <div className="flex items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <div
-                                      className={[
-                                        'text-[0.62rem] font-black uppercase tracking-[0.24em]',
-                                        isHebrew ? 'text-sky-700' : 'text-amber-700',
-                                      ].join(' ')}
-                                      dir="ltr"
-                                    >
-                                      {LANGUAGE_CARD_TAGLINES[candidateLanguage]}
-                                    </div>
-                                    <div className="mt-1.5 text-[1.55rem] font-black leading-none tracking-tight sm:text-[1.9rem]" dir="rtl">
-                                      {LANGUAGE_NATIVE_LABELS[candidateLanguage]}
-                                    </div>
-                                    <div
-                                      className={[
-                                        'mt-1.5 hidden text-sm font-semibold leading-5 sm:block',
-                                        'text-slate-700',
-                                      ].join(' ')}
-                                    >
-                                      {LANGUAGE_DESCRIPTIONS[candidateLanguage]}
-                                    </div>
-                                  </div>
+                                  <span
+                                    className={[
+                                      'rounded-full border border-white/80 bg-white/90 px-3 py-1.5 text-[0.62rem] font-black uppercase tracking-[0.18em] shadow-sm backdrop-blur',
+                                      isHebrew ? 'text-slate-800' : 'text-slate-800',
+                                    ].join(' ')}
+                                    dir="ltr"
+                                  >
+                                    {LANGUAGE_LABELS[candidateLanguage]} roots
+                                  </span>
 
                                   <span
                                     className={[
-                                      'rounded-full px-3 py-1.5 text-[0.62rem] font-black uppercase tracking-[0.18em]',
-                                      'border border-white/80 bg-white/84 text-slate-600',
+                                      'rounded-full border border-white/80 bg-white/92 px-3 py-1.5 text-[0.62rem] font-black uppercase tracking-[0.18em] text-slate-700 shadow-sm backdrop-blur',
                                     ].join(' ')}
                                   >
                                     {isHebrew ? 'Start Hebrew' : 'Start Arabic'}
                                   </span>
                                 </div>
 
-                                <div className="mt-3 hidden flex-wrap gap-2 text-[0.64rem] font-black uppercase tracking-[0.18em] sm:flex">
+                                <div className="flex flex-wrap gap-2 text-[0.64rem] font-black uppercase tracking-[0.18em]">
                                   <span
-                                      className={[
-                                        'rounded-full px-3 py-1.5',
-                                      'border border-white/90 bg-white/88 text-slate-600',
+                                    className={[
+                                      'rounded-full border border-white/80 bg-white/90 px-3 py-1.5 text-slate-700 shadow-sm backdrop-blur',
                                     ].join(' ')}
                                   >
                                     Root{' '}
@@ -3391,9 +3455,8 @@ function GameApp() {
                                     </span>
                                   </span>
                                   <span
-                                      className={[
-                                        'rounded-full px-3 py-1.5',
-                                      'border border-white/90 bg-white/88 text-slate-600',
+                                    className={[
+                                      'hidden rounded-full border border-white/80 bg-white/90 px-3 py-1.5 text-slate-700 shadow-sm backdrop-blur sm:inline-flex',
                                     ].join(' ')}
                                   >
                                     Keys{' '}
@@ -3420,8 +3483,8 @@ function GameApp() {
                           <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-emerald-700">
                             Example
                           </div>
-                          <div className="mt-1 hidden text-sm font-black text-slate-950 sm:block">
-                            This is what a valid move looks like.
+                          <div className="mt-1 hidden text-sm font-black text-slate-950 sm:block" dir="ltr">
+                            Valid move example
                           </div>
                         </div>
                         <span className="hidden rounded-full border border-white/80 bg-white/78 px-3 py-1 text-[0.62rem] font-black uppercase tracking-[0.18em] text-emerald-700 sm:inline-flex" dir="ltr">
@@ -3442,27 +3505,58 @@ function GameApp() {
                               {activeExampleMove.action}
                             </span>
                           </div>
-                          <div
-                            className="rounded-[0.85rem] bg-cover bg-center p-2 shadow-[inset_0_0_0_999px_rgba(255,255,255,0.74)] sm:p-3"
-                            style={{ backgroundImage: `url(${STAGE_BACKGROUND_IMAGE})` }}
-                          >
-                            <div className="flex items-center justify-center gap-2">
-                              <span
-                                className="rounded-[0.65rem] bg-slate-950 px-2 py-1.5 font-mono text-lg font-black text-white sm:px-3 sm:py-2 sm:text-xl"
-                                dir={activeDisplayDir}
-                              >
-                                {toDisplayPlainRoot(activeExampleMove.fromRoot, activeTransliteration)}
-                              </span>
-                              <span className="text-xl font-black text-emerald-700">→</span>
-                              <span
-                                className="rounded-[0.65rem] border border-emerald-200 bg-emerald-50 px-2 py-1.5 font-mono text-lg font-black text-slate-950 sm:px-3 sm:py-2 sm:text-xl"
-                                dir={activeDisplayDir}
-                              >
-                                {toDisplayPlainRoot(activeExampleMove.toRoot, activeTransliteration)}
-                              </span>
+                          <div className="rounded-[0.85rem] border border-emerald-100 bg-[linear-gradient(135deg,rgba(255,255,255,0.98),rgba(236,253,245,0.94))] p-2 shadow-inner sm:p-3">
+                            <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+                              <div className="rounded-[0.75rem] border border-slate-200 bg-white p-1.5 text-center shadow-sm sm:p-3">
+                                <div className="text-[0.5rem] font-black uppercase tracking-[0.14em] text-slate-500 sm:text-[0.58rem] sm:tracking-[0.18em]">
+                                  Start root
+                                </div>
+                                <div className="mt-1.5 flex justify-center gap-1 sm:mt-2" dir={activeDisplayDir}>
+                                  {activeExampleFromChars.map((char, index) => (
+                                    <span
+                                      key={`example-from-${char}-${index}`}
+                                      className={[
+                                        'grid h-9 w-9 place-items-center rounded-[0.55rem] border font-mono text-lg font-black sm:h-14 sm:w-14 sm:text-3xl',
+                                        activeExampleChangedSlots.has(index)
+                                          ? 'border-slate-950 bg-slate-950 text-white'
+                                          : 'border-slate-200 bg-slate-50 text-slate-900',
+                                      ].join(' ')}
+                                    >
+                                      {char}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+
+                              <div className="flex items-center justify-center">
+                                <span className="rounded-full bg-emerald-600 px-2 py-1 text-base font-black text-white shadow-sm sm:px-4 sm:text-xl" aria-hidden="true">
+                                  →
+                                </span>
+                              </div>
+
+                              <div className="rounded-[0.75rem] border border-emerald-200 bg-emerald-50 p-1.5 text-center shadow-sm sm:p-3">
+                                <div className="text-[0.5rem] font-black uppercase tracking-[0.14em] text-emerald-700 sm:text-[0.58rem] sm:tracking-[0.18em]">
+                                  New valid root
+                                </div>
+                                <div className="mt-1.5 flex justify-center gap-1 sm:mt-2" dir={activeDisplayDir}>
+                                  {activeExampleToChars.map((char, index) => (
+                                    <span
+                                      key={`example-to-${char}-${index}`}
+                                      className={[
+                                        'grid h-9 w-9 place-items-center rounded-[0.55rem] border font-mono text-lg font-black sm:h-14 sm:w-14 sm:text-3xl',
+                                        activeExampleChangedSlots.has(index)
+                                          ? 'border-emerald-600 bg-emerald-600 text-white'
+                                          : 'border-emerald-200 bg-white text-slate-900',
+                                      ].join(' ')}
+                                    >
+                                      {char}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
                             </div>
                           </div>
-                          <div className="mt-2 text-xs font-bold leading-5 text-slate-600">
+                          <div className="mt-2 hidden text-xs font-bold leading-5 text-slate-600 sm:block">
                             {activeExampleMove.note}
                           </div>
                         </div>
