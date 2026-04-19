@@ -13,7 +13,11 @@ const DEFAULT_ROOM_MAX_CONTROL_MS = 12_000;
 const DEFAULT_ROOM_MAX_PLAYERS = 4;
 const DEFAULT_ROOM_LOCK_TTL_MS = 4_000;
 const DEFAULT_ROOM_LOCK_WAIT_MS = 2_000;
+const DEFAULT_GAME_DURATION_MS = 90_000;
+const DEFAULT_COUNTDOWN_DURATION_MS = 4_000;
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+const ROOM_PHASES = ['waiting', 'countdown', 'racing', 'completed'];
 
 const roomsBackendMode = String(process.env.ROOMS_BACKEND || 'memory').toLowerCase();
 const roomsBackend = roomsBackendMode === 'redis' ? 'redis' : 'memory';
@@ -99,6 +103,11 @@ const normalizePlayerName = (value, fallback = 'Player') => {
   return (trimmed || fallback).slice(0, 24);
 };
 
+const normalizePhase = (value) => {
+  const normalized = String(value || 'waiting').toLowerCase();
+  return ROOM_PHASES.includes(normalized) ? normalized : 'waiting';
+};
+
 const createRoomCode = () =>
   Array.from(
     { length: 6 },
@@ -132,6 +141,8 @@ const deserializeStoredRoom = (value) => {
       streak: Math.max(0, Number(candidate.streak) || 0),
       longestStreak: Math.max(0, Number(candidate.longestStreak) || 0),
       takeovers: Math.max(0, Number(candidate.takeovers) || 0),
+      validRoots: Math.max(0, Number(candidate.validRoots) || 0),
+      ready: Boolean(candidate.ready),
       combo: {
         permutationChain: Math.max(0, Math.floor(Number(candidate.combo?.permutationChain) || 0)),
         samePositionChain: Math.max(0, Math.floor(Number(candidate.combo?.samePositionChain) || 0)),
@@ -164,7 +175,7 @@ const deserializeStoredRoom = (value) => {
     code,
     version: Math.max(1, Math.floor(Number(value.version) || 1)),
     status: value.status === 'completed' ? 'completed' : 'active',
-    phase: value.phase === 'controlled' ? 'controlled' : 'open_claim',
+    phase: normalizePhase(value.phase),
     reason: typeof value.reason === 'string' && value.reason ? value.reason : null,
     createdAtMs: Number(value.createdAtMs) || now,
     updatedAtMs: Number(value.updatedAtMs) || now,
@@ -184,6 +195,9 @@ const deserializeStoredRoom = (value) => {
     allowRevisit: Boolean(value.allowRevisit),
     types: normalizeMoveTypes(value.types),
     letterBank: Array.isArray(value.letterBank) ? [...new Set(value.letterBank.filter(Boolean))] : null,
+    raceStartedAtMs: Number(value.raceStartedAtMs) || null,
+    raceEndsAtMs: Number(value.raceEndsAtMs) || null,
+    countdownStartedAtMs: Number(value.countdownStartedAtMs) || null,
     config: {
       countdownMs: normalizeNumber(value.config?.countdownMs, config.defaultCountdownMs, 10_000, 300_000),
       bonusBaseMs: normalizeNumber(value.config?.bonusBaseMs, config.defaultBonusBaseMs, 500, 60_000),
@@ -196,6 +210,8 @@ const deserializeStoredRoom = (value) => {
       ),
       maxControlMs: normalizeNumber(value.config?.maxControlMs, DEFAULT_ROOM_MAX_CONTROL_MS, 3_000, 60_000),
       maxPlayers: normalizeNumber(value.config?.maxPlayers, DEFAULT_ROOM_MAX_PLAYERS, 2, 16),
+      gameDurationMs: normalizeNumber(value.config?.gameDurationMs, DEFAULT_GAME_DURATION_MS, 15_000, 600_000),
+      countdownDurationMs: normalizeNumber(value.config?.countdownDurationMs, DEFAULT_COUNTDOWN_DURATION_MS, 2_000, 10_000),
     },
     players,
   };
@@ -218,6 +234,8 @@ const createRoomPlayer = ({ name, fallbackName, isHost, now }) => ({
   streak: 0,
   longestStreak: 0,
   takeovers: 0,
+  validRoots: 0,
+  ready: false,
   combo: createComboState(),
   isHost,
 });
@@ -230,6 +248,8 @@ const serializeRoomPlayer = (player, viewerPlayerId) => ({
   streak: player.streak,
   longestStreak: player.longestStreak,
   takeovers: player.takeovers,
+  validRoots: player.validRoots,
+  ready: player.ready,
   combo: {
     permutationChain: player.combo.permutationChain,
     samePositionChain: player.combo.samePositionChain,
@@ -325,6 +345,8 @@ export const createRoom = async ({
   controlWindowMs = DEFAULT_ROOM_CONTROL_WINDOW_MS,
   maxControlMs = DEFAULT_ROOM_MAX_CONTROL_MS,
   maxPlayers = DEFAULT_ROOM_MAX_PLAYERS,
+  gameDurationMs = DEFAULT_GAME_DURATION_MS,
+  countdownDurationMs = DEFAULT_COUNTDOWN_DURATION_MS,
   now = Date.now(),
 }) => {
   const hostPlayer = createRoomPlayer({
@@ -339,7 +361,7 @@ export const createRoom = async ({
     code: await generateUniqueRoomCode(),
     version: 1,
     status: 'active',
-    phase: 'open_claim',
+    phase: 'waiting',
     reason: null,
     createdAtMs: now,
     updatedAtMs: now,
@@ -353,6 +375,9 @@ export const createRoom = async ({
     allowRevisit: Boolean(allowRevisit),
     types: normalizeMoveTypes(types),
     letterBank,
+    raceStartedAtMs: null,
+    raceEndsAtMs: null,
+    countdownStartedAtMs: null,
     config: {
       countdownMs: normalizeNumber(countdownMs, config.defaultCountdownMs, 10_000, 300_000),
       bonusBaseMs: normalizeNumber(bonusBaseMs, config.defaultBonusBaseMs, 500, 60_000),
@@ -365,6 +390,8 @@ export const createRoom = async ({
       ),
       maxControlMs: normalizeNumber(maxControlMs, DEFAULT_ROOM_MAX_CONTROL_MS, 3_000, 60_000),
       maxPlayers: normalizeNumber(maxPlayers, DEFAULT_ROOM_MAX_PLAYERS, 2, 16),
+      gameDurationMs: normalizeNumber(gameDurationMs, DEFAULT_GAME_DURATION_MS, 15_000, 600_000),
+      countdownDurationMs: normalizeNumber(countdownDurationMs, DEFAULT_COUNTDOWN_DURATION_MS, 2_000, 10_000),
     },
     players: [hostPlayer],
   };
@@ -407,6 +434,63 @@ export const joinRoom = (room, { playerName, now = Date.now() } = {}) => {
   return player;
 };
 
+export const togglePlayerReady = (room, player, now = Date.now()) => {
+  player.ready = !player.ready;
+  room.updatedAtMs = now;
+  room.version += 1;
+
+  const allReady = room.players.length >= 2 && room.players.every((p) => p.ready);
+  if (allReady && room.phase === 'waiting') {
+    room.phase = 'countdown';
+    room.countdownStartedAtMs = now;
+    room.updatedAtMs = now;
+    room.version += 1;
+  }
+
+  return { allReady, ready: player.ready };
+};
+
+export const startRace = (room, now = Date.now()) => {
+  if (room.phase !== 'countdown') return false;
+
+  room.phase = 'racing';
+  room.raceStartedAtMs = now;
+  room.raceEndsAtMs = now + room.config.gameDurationMs;
+  room.turnStartedAtMs = now;
+  room.startedAtMs = now;
+  room.updatedAtMs = now;
+  room.version += 1;
+
+  // Reset all player scores for the race
+  for (const player of room.players) {
+    player.score = 0;
+    player.streak = 0;
+    player.longestStreak = 0;
+    player.takeovers = 0;
+    player.validRoots = 0;
+    player.combo = createComboState();
+  }
+
+  return true;
+};
+
+export const getRaceRemainingMs = (room, now = Date.now()) => {
+  if (!room.raceEndsAtMs || room.phase !== 'racing') return 0;
+  return Math.max(0, room.raceEndsAtMs - now);
+};
+
+export const checkRaceTimeout = (room, now = Date.now()) => {
+  if (room.phase !== 'racing') return false;
+  if (getRaceRemainingMs(room, now) > 0) return false;
+
+  room.phase = 'completed';
+  room.status = 'completed';
+  room.reason = 'time_up';
+  room.updatedAtMs = now;
+  room.version += 1;
+  return true;
+};
+
 export const getNeighborOptionsForRoom = (room, limit = 500) =>
   getNeighbors(room.currentRoot, {
     types: room.types,
@@ -432,7 +516,7 @@ export const reconcileRoomControlState = (room, now = Date.now()) => {
 
   room.controllerPlayerId = null;
   room.controllerExpiresAtMs = null;
-  room.phase = 'open_claim';
+  room.phase = room.phase === 'racing' ? 'racing' : 'open_claim';
   room.turnStartedAtMs = now;
   room.updatedAtMs = now;
   room.version += 1;
@@ -458,6 +542,30 @@ export const applyInvalidRoomMove = (room, player, now = Date.now()) => {
   return didChange;
 };
 
+export const applyRaceMove = (room, player, candidateRoot, moveEdge, now = Date.now()) => {
+  // Simple +1 scoring for race mode
+  player.validRoots += 1;
+  player.score += 1;
+  player.streak += 1;
+  player.longestStreak = Math.max(player.longestStreak, player.streak);
+
+  room.currentRoot = candidateRoot;
+  room.visited.add(candidateRoot);
+  room.moveCount += 1;
+  room.turnStartedAtMs = now;
+  room.updatedAtMs = now;
+  room.version += 1;
+
+  return {
+    ok: true,
+    scoreGain: 1,
+    validRoots: player.validRoots,
+    streakAfterMove: player.streak,
+    byPlayerId: player.id,
+    byPlayerName: player.name,
+  };
+};
+
 export const buildRoomMoveSummary = (player, move) => ({
   ok: Boolean(move.ok),
   byPlayerId: player.id,
@@ -465,6 +573,43 @@ export const buildRoomMoveSummary = (player, move) => ({
   controlChange: move.controlChange ?? 'none',
   ...move,
 });
+
+export const listWaitingRooms = async () => {
+  if (roomsBackend === 'memory') {
+    return [...memoryRooms.values()]
+      .filter((room) => room.phase === 'waiting' && room.status === 'active')
+      .map((room) => ({
+        code: room.code,
+        playerCount: room.players.length,
+        maxPlayers: room.config.maxPlayers,
+        gameDurationMs: room.config.gameDurationMs,
+        hostName: room.players.find((p) => p.isHost)?.name || 'Unknown',
+        createdAtMs: room.createdAtMs,
+      }));
+  }
+
+  // For Redis, iterate the index
+  const redis = getRedisClient();
+  const codes = await redis.smembers(roomIndexKey);
+  const rooms = [];
+
+  for (const code of codes) {
+    const stored = await redis.get(roomKey(code));
+    if (!stored) continue;
+    const room = deserializeStoredRoom(stored);
+    if (!room || room.phase !== 'waiting' || room.status !== 'active') continue;
+    rooms.push({
+      code: room.code,
+      playerCount: room.players.length,
+      maxPlayers: room.config.maxPlayers,
+      gameDurationMs: room.config.gameDurationMs,
+      hostName: room.players.find((p) => p.isHost)?.name || 'Unknown',
+      createdAtMs: room.createdAtMs,
+    });
+  }
+
+  return rooms;
+};
 
 export const serializeRoomPayload = async (
   room,
@@ -479,6 +624,7 @@ export const serializeRoomPayload = async (
   const resolvedPlayer = player ?? findRoomPlayerByToken(room, playerToken);
   const edges = neighborEdges ?? (await getNeighborOptionsForRoom(room));
   const controllerRemainingMs = getRoomControllerRemainingMs(room, now);
+  const raceRemainingMs = getRaceRemainingMs(room, now);
 
   return {
     room: {
@@ -503,6 +649,10 @@ export const serializeRoomPayload = async (
       allowRevisit: room.allowRevisit,
       types: room.types,
       letterBank: room.letterBank,
+      raceStartedAtMs: room.raceStartedAtMs,
+      raceEndsAtMs: room.raceEndsAtMs,
+      raceRemainingMs,
+      countdownStartedAtMs: room.countdownStartedAtMs,
       config: room.config,
       players: room.players.map((candidate) =>
         serializeRoomPlayer(candidate, resolvedPlayer?.id || null),

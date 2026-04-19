@@ -12,7 +12,7 @@ type GameMode = 'journey' | 'survival';
 type LanguageMode = 'hebrew' | 'arabic';
 type SessionStatus = 'active' | 'game_over' | 'completed';
 type RoomStatus = 'active' | 'completed';
-type RoomPhase = 'open_claim' | 'controlled';
+export type RoomPhase = 'waiting' | 'countdown' | 'racing' | 'open_claim' | 'controlled' | 'completed';
 
 type SessionConfig = {
   countdownMs?: number;
@@ -120,6 +120,8 @@ type RoomPlayerSnapshot = {
   streak: number;
   longestStreak: number;
   takeovers: number;
+  validRoots: number;
+  ready: boolean;
   combo: {
     permutationChain: number;
     samePositionChain: number;
@@ -160,6 +162,10 @@ type RoomSnapshot = {
   allowRevisit: boolean;
   types: MoveType[];
   letterBank: string[] | null;
+  raceStartedAtMs: number | null;
+  raceEndsAtMs: number | null;
+  raceRemainingMs: number;
+  countdownStartedAtMs: number | null;
   config: {
     countdownMs: number;
     bonusBaseMs: number;
@@ -167,6 +173,8 @@ type RoomSnapshot = {
     controlWindowMs: number;
     maxControlMs: number;
     maxPlayers: number;
+    gameDurationMs: number;
+    countdownDurationMs: number;
   };
   players: RoomPlayerSnapshot[];
   options: {
@@ -176,6 +184,19 @@ type RoomSnapshot = {
     neighbors: string[];
     edges: NeighborEdge[];
   };
+};
+
+export type RoomListEntry = {
+  code: string;
+  playerCount: number;
+  maxPlayers: number;
+  gameDurationMs: number;
+  hostName: string;
+  createdAtMs: number;
+};
+
+export type RoomListPayload = {
+  rooms: RoomListEntry[];
 };
 
 type RoomPayload = {
@@ -254,6 +275,8 @@ type InternalRoomPlayer = {
   streak: number;
   longestStreak: number;
   takeovers: number;
+  validRoots: number;
+  ready: boolean;
   combo: ComboState;
   isHost: boolean;
 };
@@ -278,6 +301,9 @@ type InternalRoom = {
   allowRevisit: boolean;
   types: MoveType[];
   letterBank: string[] | null;
+  raceStartedAtMs: number | null;
+  raceEndsAtMs: number | null;
+  countdownStartedAtMs: number | null;
   config: {
     countdownMs: number;
     bonusBaseMs: number;
@@ -285,6 +311,8 @@ type InternalRoom = {
     controlWindowMs: number;
     maxControlMs: number;
     maxPlayers: number;
+    gameDurationMs: number;
+    countdownDurationMs: number;
   };
   players: InternalRoomPlayer[];
 };
@@ -775,6 +803,12 @@ const normalizePlayerName = (value: unknown, fallback = 'Player') => {
   return (trimmed || fallback).slice(0, 24);
 };
 
+const normalizePhase = (value: unknown): RoomPhase => {
+  const normalized = String(value || 'waiting').toLowerCase();
+  const phases: RoomPhase[] = ['waiting', 'countdown', 'racing', 'open_claim', 'controlled', 'completed'];
+  return phases.includes(normalized as RoomPhase) ? (normalized as RoomPhase) : 'waiting';
+};
+
 const serializeRoomPlayer = (
   player: InternalRoomPlayer,
   viewerPlayerId: string | null,
@@ -786,6 +820,8 @@ const serializeRoomPlayer = (
   streak: player.streak,
   longestStreak: player.longestStreak,
   takeovers: player.takeovers,
+  validRoots: player.validRoots,
+  ready: player.ready,
   combo: {
     permutationChain: player.combo.permutationChain,
     samePositionChain: player.combo.samePositionChain,
@@ -861,7 +897,7 @@ const deserializeStoredRoom = (value: StoredRoom | Partial<StoredRoom>) => {
     language,
     version: Math.max(1, Math.floor(Number(value.version) || 1)),
     status: value.status === 'completed' ? 'completed' : 'active',
-    phase: value.phase === 'controlled' ? 'controlled' : 'open_claim',
+    phase: normalizePhase(value.phase),
     reason: typeof value.reason === 'string' && value.reason ? value.reason : null,
     createdAtMs: Number(value.createdAtMs) || getNow(),
     updatedAtMs: Number(value.updatedAtMs) || getNow(),
@@ -884,6 +920,9 @@ const deserializeStoredRoom = (value: StoredRoom | Partial<StoredRoom>) => {
     allowRevisit: Boolean(value.allowRevisit),
     types: normalizeMoveTypes(value.types),
     letterBank: normalizeLetterBank(value.letterBank, language),
+    raceStartedAtMs: Number(value.raceStartedAtMs) || null,
+    raceEndsAtMs: Number(value.raceEndsAtMs) || null,
+    countdownStartedAtMs: Number(value.countdownStartedAtMs) || null,
     config: {
       countdownMs: normalizeNumber(value.config?.countdownMs, 45_000, 10_000, 300_000),
       bonusBaseMs: normalizeNumber(value.config?.bonusBaseMs, 4_000, 500, 60_000),
@@ -906,6 +945,8 @@ const deserializeStoredRoom = (value: StoredRoom | Partial<StoredRoom>) => {
         2,
         16,
       ),
+      gameDurationMs: normalizeNumber(value.config?.gameDurationMs, 90_000, 15_000, 600_000),
+      countdownDurationMs: normalizeNumber(value.config?.countdownDurationMs, 4_000, 2_000, 10_000),
     },
     players,
   };
@@ -1637,15 +1678,24 @@ const serializeRoomPayload = async (
     now = getNow(),
   }: {
     player?: InternalRoomPlayer | null;
-    playerToken?: string | null;
+    playerToken?: unknown;
     neighborEdges?: NeighborEdge[];
-    move?: RoomMoveSummary | null;
+    move?: Partial<RoomMoveSummary> | null;
     now?: number;
   } = {},
 ): Promise<RoomPayload> => {
   const resolvedPlayer = player ?? findRoomPlayerByToken(room, playerToken);
-  const edges = neighborEdges ?? (await getNeighborOptionsForRoom(room));
+  const edges =
+    neighborEdges ??
+    (await getNeighbors(room.language, room.currentRoot, {
+      types: room.types,
+      limit: 500,
+      excludeVisited: !room.allowRevisit,
+      visited: room.allowRevisit ? [] : [...room.visited],
+      letterBank: room.letterBank,
+    }));
   const controllerRemainingMs = getRoomControllerRemainingMs(room, now);
+  const raceRemainingMs = room.raceEndsAtMs ? Math.max(0, room.raceEndsAtMs - now) : 0;
 
   return {
     room: {
@@ -1671,12 +1721,16 @@ const serializeRoomPayload = async (
       allowRevisit: room.allowRevisit,
       types: room.types,
       letterBank: room.letterBank,
+      raceStartedAtMs: room.raceStartedAtMs,
+      raceEndsAtMs: room.raceEndsAtMs,
+      raceRemainingMs,
+      countdownStartedAtMs: room.countdownStartedAtMs,
       config: room.config,
       players: room.players.map((candidate) => serializeRoomPlayer(candidate, resolvedPlayer?.id ?? null)),
       options: formatNeighborPayload(room.currentRoot, edges),
     },
     player: resolvedPlayer ? serializeRoomPlayerAuth(resolvedPlayer) : null,
-    move,
+    move: move as RoomMoveSummary | null,
   };
 };
 
@@ -1928,6 +1982,8 @@ const createRoomPlayer = ({
   streak: 0,
   longestStreak: 0,
   takeovers: 0,
+  validRoots: 0,
+  ready: false,
   combo: createComboState(),
   isHost,
 });
@@ -2482,6 +2538,18 @@ const handlePath = async (body: Record<string, unknown>) => {
   };
 };
 
+const handleRoomList = async () => {
+  fail(501, { error: 'multiplayer_disabled_in_local_mode' });
+};
+
+const handleRoomReady = async (_roomCode: string, _body: Record<string, unknown>) => {
+  fail(501, { error: 'multiplayer_disabled_in_local_mode' });
+};
+
+const handleRoomStart = async (_roomCode: string, _body: Record<string, unknown>) => {
+  fail(501, { error: 'multiplayer_disabled_in_local_mode' });
+};
+
 const requestRemoteJson = async <T,>(path: string, init?: RequestInit): Promise<T> => {
   const response = await fetch(`${API_BASE.replace(/\/+$/, '')}${path}`, init);
   let data: unknown = null;
@@ -2523,8 +2591,30 @@ const requestLocalJson = async <T,>(path: string, init?: RequestInit): Promise<T
     return (await handleGetNextOptions(body)) as T;
   }
 
+  if (url.pathname === '/api/rooms/list' && method === 'GET') {
+    return (await handleRoomList()) as T;
+  }
+
   if (url.pathname === '/api/rooms/create' && method === 'POST') {
     return (await handleCreateRoom(body)) as T;
+  }
+
+  const roomReadyMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/ready$/);
+  if (roomReadyMatch && method === 'POST') {
+    const roomCode = roomReadyMatch[1];
+    if (!roomCode) {
+      throw createApiError(404, { error: 'room_not_found' });
+    }
+    return (await handleRoomReady(decodeURIComponent(roomCode), body)) as T;
+  }
+
+  const roomStartMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/start$/);
+  if (roomStartMatch && method === 'POST') {
+    const roomCode = roomStartMatch[1];
+    if (!roomCode) {
+      throw createApiError(404, { error: 'room_not_found' });
+    }
+    return (await handleRoomStart(decodeURIComponent(roomCode), body)) as T;
   }
 
   if (url.pathname === '/api/session/start' && method === 'POST') {
@@ -2616,3 +2706,5 @@ export const resetApiTime = () => {
   if (USE_REMOTE_API) return;
   localTimeOffsetMs = 0;
 };
+
+export const isRemoteApiConfigured = USE_REMOTE_API;
