@@ -1699,6 +1699,23 @@ function GameApp() {
     };
   }, [mode, room, loadRoomList]);
 
+  useEffect(() => {
+    if (!room || !roomCodeRef.current || room.phase === 'completed' || isRemoteApiConfigured === false) return;
+    if (mode !== 'multiplayer') return;
+
+    let fetching = false;
+    const intervalId = window.setInterval(() => {
+      if (fetching) return;
+      fetching = true;
+      requestJson<RoomPayload>(`/api/rooms/${encodeURIComponent(roomCodeRef.current!)}/state`)
+        .then((payload) => applyRoomPayload(payload, { syncLetters: false, preserveSelection: true }))
+        .catch(() => {})
+        .finally(() => { fetching = false; });
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [mode, room?.phase, applyRoomPayload]);
+
   const toggleRoomReady = useCallback(async () => {
     if (!room || !roomCodeRef.current) return;
     try {
@@ -1713,19 +1730,7 @@ function GameApp() {
     }
   }, [room, applyRoomPayload]);
 
-  const startRoomRace = useCallback(async () => {
-    if (!room || !roomCodeRef.current) return;
-    try {
-      const payload = await requestJson<RoomPayload>(`/api/rooms/${encodeURIComponent(roomCodeRef.current)}/start`, {
-        method: 'POST',
-      });
-      applyRoomPayload(payload, { syncLetters: true });
-    } catch (error: unknown) {
-      if (isApiError(error)) {
-        setErrorText(error.message);
-      }
-    }
-  }, [room, applyRoomPayload]);
+
 
   const joinRoom = useCallback(async () => {
     const trimmedRoomCode = roomCodeInput.trim();
@@ -3068,19 +3073,9 @@ function GameApp() {
             {self?.ready ? 'Not ready' : 'Ready up!'}
           </button>
           
-          {self?.isHost ? (
-            <button
-              onClick={startRoomRace}
-              disabled={!allReady}
-              className="rounded-[1.2rem] bg-slate-950 px-6 py-4 text-base font-black text-white transition hover:-translate-y-0.5 shadow-[0_12px_28px_-12px_rgba(15,23,42,0.88)] hover:bg-slate-800 disabled:opacity-50 disabled:translate-y-0 disabled:shadow-none disabled:cursor-not-allowed"
-            >
-              Start Race
-            </button>
-          ) : (
-            <div className="text-sm font-bold text-slate-500 flex-1 text-right">
-              {allReady ? 'Waiting for host to start...' : 'Waiting for players to ready up...'}
-            </div>
-          )}
+          <div className="text-sm font-bold text-slate-500 flex-1 text-right">
+            {allReady ? 'Starting race...' : 'Waiting for all players to ready up...'}
+          </div>
         </div>
       </div>
     );
@@ -3612,33 +3607,52 @@ function GameApp() {
 
                       <div
                         className={[
-                          'flex flex-wrap items-center gap-2',
+                          'flex flex-col gap-4 mt-4',
                           setupNeedsLanguageChoice ? 'hidden' : '',
                         ].join(' ')}
                         dir="ltr"
                         aria-label="Run actions"
                       >
-                        <button
-                          id="advanced-settings-toggle"
-                          type="button"
-                          aria-expanded={showAdvancedSetup}
-                          aria-controls="advanced-settings-panel"
-                          onClick={() => setShowAdvancedSetup((prev) => !prev)}
-                          className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-700 transition hover:bg-slate-50"
-                        >
-                          {showAdvancedSetup ? 'Hide settings' : 'Run settings'}
-                        </button>
-                        {mode !== 'multiplayer' ? (
-                          <button
-                            id="start-btn"
-                            type="button"
-                            onClick={startSession}
-                            disabled={loadingSession}
-                            className="rounded-full bg-slate-950 px-5 py-2 text-sm font-black text-white shadow-[0_16px_44px_-24px_rgba(15,23,42,0.88)] transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
-                          >
-                            {loadingSession ? 'Starting...' : session ? 'Play again' : 'Start run'}
-                          </button>
+                        {!setupNeedsLanguageChoice && !showSummary && !activeSession && !room ? (
+                          <div className="w-full grid grid-cols-1 md:grid-cols-3 gap-3 mb-2" dir="ltr">
+                            <button type="button" onClick={() => setMode('survival')} className={`p-4 border rounded-[1.3rem] text-left bg-white transition hover:-translate-y-1 shadow-[0_10px_20px_-10px_rgba(0,0,0,0.05)] ${mode === 'survival' ? 'border-sky-500 ring-2 ring-sky-200 bg-sky-50/50' : 'border-slate-200 hover:shadow-md'}`}>
+                              <div className="text-xl font-black text-slate-900">Survival</div>
+                              <p className="text-[0.7rem] uppercase tracking-widest text-slate-500 font-bold mt-1">Endless scaling roots</p>
+                            </button>
+                            <button type="button" onClick={() => { setMode('journey'); setShowAdvancedSetup(true); }} className={`p-4 border rounded-[1.3rem] text-left bg-white transition hover:-translate-y-1 shadow-[0_10px_20px_-10px_rgba(0,0,0,0.05)] ${mode === 'journey' ? 'border-amber-500 ring-2 ring-amber-200 bg-amber-50/50' : 'border-slate-200 hover:shadow-md'}`}>
+                              <div className="text-xl font-black text-amber-700">Journey</div>
+                              <p className="text-[0.7rem] uppercase tracking-widest text-slate-500 font-bold mt-1">Shortest path puzzles</p>
+                            </button>
+                            <button type="button" onClick={() => setMode('multiplayer')} className={`p-4 border rounded-[1.3rem] text-left bg-white transition hover:-translate-y-1 shadow-[0_10px_20px_-10px_rgba(0,0,0,0.05)] ${mode === 'multiplayer' ? 'border-rose-500 ring-2 ring-rose-200 bg-rose-50/50' : 'border-slate-200 hover:shadow-md'}`}>
+                              <div className="text-xl font-black text-rose-600">Multiplayer</div>
+                              <p className="text-[0.7rem] uppercase tracking-widest text-slate-500 font-bold mt-1">90s Live PvP Race</p>
+                            </button>
+                          </div>
                         ) : null}
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            id="advanced-settings-toggle"
+                            type="button"
+                            aria-expanded={showAdvancedSetup}
+                            aria-controls="advanced-settings-panel"
+                            onClick={() => setShowAdvancedSetup((prev) => !prev)}
+                            className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-700 transition hover:bg-slate-50"
+                          >
+                            {showAdvancedSetup ? 'Hide settings' : 'Run settings'}
+                          </button>
+                          {mode !== 'multiplayer' ? (
+                            <button
+                              id="start-btn"
+                              type="button"
+                              onClick={startSession}
+                              disabled={loadingSession}
+                              className="rounded-full bg-slate-950 px-5 py-2 text-sm font-black text-white shadow-[0_16px_44px_-24px_rgba(15,23,42,0.88)] transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+                            >
+                              {loadingSession ? 'Starting...' : session ? 'Play again' : 'Start run'}
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
 
@@ -4033,41 +4047,9 @@ function GameApp() {
                       <div
                         id="advanced-settings-panel"
                         className={[
-                          'mt-3 grid gap-3',
-                          mode === 'multiplayer' ? 'md:grid-cols-4' : 'md:grid-cols-3',
+                          'mt-3 grid gap-3 md:grid-cols-4'
                         ].join(' ')}
                       >
-                        <div
-                          className={[
-                            'rounded-[1.15rem] border border-slate-200 bg-slate-50 px-4 py-3',
-                            mode === 'multiplayer' ? 'md:col-span-4' : 'md:col-span-3',
-                          ].join(' ')}
-                        >
-                          <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
-                            Run type
-                          </div>
-                          <div className="mt-2 flex flex-wrap gap-2" dir="ltr" aria-label="Game mode">
-                            {(['survival', 'journey', 'multiplayer'] as PlayMode[]).map((candidateMode) => (
-                              <button
-                                key={candidateMode}
-                                type="button"
-                                className={[
-                                  'rounded-full px-4 py-2 text-sm font-black transition',
-                                  mode === candidateMode
-                                    ? 'bg-slate-950 text-white'
-                                    : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50',
-                                ].join(' ')}
-                                onClick={() => setMode(candidateMode)}
-                              >
-                                {candidateMode === 'multiplayer'
-                                  ? 'Multiplayer'
-                                  : candidateMode === 'journey'
-                                    ? 'Journey'
-                                    : 'Survival'}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
                         {setupTimingFields.map((field) => (
                           <label
                             key={field.id}
