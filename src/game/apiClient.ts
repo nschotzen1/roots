@@ -864,6 +864,8 @@ const deserializeStoredRoom = (value: StoredRoom | Partial<StoredRoom>) => {
       streak: Math.max(0, Number((candidate as Partial<InternalRoomPlayer>).streak) || 0),
       longestStreak: Math.max(0, Number((candidate as Partial<InternalRoomPlayer>).longestStreak) || 0),
       takeovers: Math.max(0, Number((candidate as Partial<InternalRoomPlayer>).takeovers) || 0),
+      validRoots: Math.max(0, Number((candidate as Partial<InternalRoomPlayer>).validRoots) || 0),
+      ready: Boolean((candidate as Partial<InternalRoomPlayer>).ready),
       combo: {
         permutationChain: Math.max(
           0,
@@ -2265,6 +2267,9 @@ const handleCreateRoom = async (body: Record<string, unknown>) => {
     allowRevisit,
     types,
     letterBank,
+    raceStartedAtMs: null,
+    raceEndsAtMs: null,
+    countdownStartedAtMs: null,
     config: {
       countdownMs: normalizeNumber(body.countdownMs ?? body.initialTurnMs, 45_000, 10_000, 300_000),
       bonusBaseMs: normalizeNumber(body.bonusBaseMs ?? body.baseTurnMs, 4_000, 500, 60_000),
@@ -2282,6 +2287,8 @@ const handleCreateRoom = async (body: Record<string, unknown>) => {
         60_000,
       ),
       maxPlayers: normalizeNumber(body.maxPlayers, DEFAULT_ROOM_MAX_PLAYERS, 2, 16),
+      gameDurationMs: normalizeNumber(body.gameDurationMs, 90_000, 15_000, 600_000),
+      countdownDurationMs: normalizeNumber(body.countdownDurationMs, 4_000, 2_000, 10_000),
     },
     players: [hostPlayer],
   };
