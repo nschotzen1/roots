@@ -33,16 +33,22 @@ import {
 } from './gameSessions.js';
 import {
   applyInvalidRoomMove,
+  applyRaceMove,
   buildRoomMoveSummary,
+  checkRaceTimeout,
   countRooms,
   createRoom,
   findRoomPlayerByToken,
   getNeighborOptionsForRoom,
+  getRaceRemainingMs,
   getRoomControllerRemainingMs,
   joinRoom,
+  listWaitingRooms,
   normalizeRoomCode,
   reconcileRoomControlState,
   serializeRoomPayload,
+  startRace,
+  togglePlayerReady,
   withRoomLock,
 } from './multiplayerRooms.js';
 import { resolveMoveOutcome } from './playRules.js';
@@ -328,6 +334,15 @@ app.post('/getNextOptions', async (req, res) => {
   }
 });
 
+app.get('/api/rooms/list', async (_req, res) => {
+  try {
+    const rooms = await listWaitingRooms();
+    res.json({ rooms });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/rooms/create', async (req, res) => {
   try {
     const types = normalizeMoveTypes(req.body?.types ?? req.body?.allowedTypes);
@@ -366,6 +381,8 @@ app.post('/api/rooms/create', async (req, res) => {
       controlWindowMs: parseMs(req.body?.controlWindowMs ?? req.body?.claimWindowMs, 8_000),
       maxControlMs: parseMs(req.body?.maxControlMs, 12_000),
       maxPlayers: parseMs(req.body?.maxPlayers, 4),
+      gameDurationMs: parseMs(req.body?.gameDurationMs, 90_000),
+      countdownDurationMs: parseMs(req.body?.countdownDurationMs, 4_000),
       now,
     });
 
@@ -402,6 +419,17 @@ app.post('/api/rooms/:roomCode/join', async (req, res) => {
         };
       }
 
+      if (room.phase !== 'waiting') {
+        return {
+          status: 409,
+          body: {
+            error: 'room_not_accepting_players',
+            code: room.code,
+            phase: room.phase,
+          },
+        };
+      }
+
       if (room.players.length >= room.config.maxPlayers) {
         return {
           status: 409,
@@ -431,6 +459,99 @@ app.post('/api/rooms/:roomCode/join', async (req, res) => {
   }
 });
 
+app.post('/api/rooms/:roomCode/ready', async (req, res) => {
+  try {
+    const payload = await withRoomLock(req.params.roomCode, async (room) => {
+      if (!room) {
+        return {
+          status: 404,
+          body: { error: 'room_not_found', code: normalizeRoomCode(req.params.roomCode) },
+        };
+      }
+
+      const now = Date.now();
+      const player = findRoomPlayerByToken(room, req.body?.playerToken ?? req.body?.token);
+
+      if (!player) {
+        return {
+          status: 401,
+          body: { error: 'player_not_in_room', code: room.code },
+        };
+      }
+
+      if (room.phase !== 'waiting') {
+        return {
+          status: 409,
+          body: { error: 'room_not_in_waiting_phase', code: room.code, phase: room.phase },
+        };
+      }
+
+      const result = togglePlayerReady(room, player, now);
+      const neighbors = await getNeighborOptionsForRoom(room);
+
+      return {
+        status: 200,
+        body: await serializeRoomPayload(room, {
+          player,
+          neighborEdges: neighbors,
+          now,
+          move: { ok: true, ready: result.ready, allReady: result.allReady },
+        }),
+      };
+    });
+
+    res.status(payload.status).json(payload.body);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/rooms/:roomCode/start', async (req, res) => {
+  try {
+    const payload = await withRoomLock(req.params.roomCode, async (room) => {
+      if (!room) {
+        return {
+          status: 404,
+          body: { error: 'room_not_found', code: normalizeRoomCode(req.params.roomCode) },
+        };
+      }
+
+      const now = Date.now();
+      const player = findRoomPlayerByToken(room, req.body?.playerToken ?? req.body?.token);
+
+      if (!player) {
+        return {
+          status: 401,
+          body: { error: 'player_not_in_room', code: room.code },
+        };
+      }
+
+      if (room.phase !== 'countdown') {
+        return {
+          status: 409,
+          body: { error: 'room_not_in_countdown_phase', code: room.code, phase: room.phase },
+        };
+      }
+
+      startRace(room, now);
+      const neighbors = await getNeighborOptionsForRoom(room);
+
+      return {
+        status: 200,
+        body: await serializeRoomPayload(room, {
+          player,
+          neighborEdges: neighbors,
+          now,
+        }),
+      };
+    });
+
+    res.status(payload.status).json(payload.body);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/rooms/:roomCode/state', async (req, res) => {
   try {
     const payload = await withRoomLock(req.params.roomCode, async (room) => {
@@ -442,6 +563,7 @@ app.get('/api/rooms/:roomCode/state', async (req, res) => {
       }
 
       const now = Date.now();
+      checkRaceTimeout(room, now);
       reconcileRoomControlState(room, now);
       const neighbors = room.status === 'active' ? await getNeighborOptionsForRoom(room) : [];
 
@@ -475,6 +597,7 @@ app.post('/api/rooms/:roomCode/move', async (req, res) => {
       }
 
       const now = Date.now();
+      checkRaceTimeout(room, now);
       reconcileRoomControlState(room, now);
       const player = findRoomPlayerByToken(room, req.body?.playerToken ?? req.body?.token);
 
@@ -488,7 +611,7 @@ app.post('/api/rooms/:roomCode/move', async (req, res) => {
         };
       }
 
-      if (room.status !== 'active') {
+      if (room.status !== 'active' || (room.phase !== 'racing' && room.phase !== 'open_claim' && room.phase !== 'controlled')) {
         return {
           status: 409,
           body: await serializeRoomPayload(room, {
@@ -511,7 +634,10 @@ app.post('/api/rooms/:roomCode/move', async (req, res) => {
         };
       }
 
-      if (room.controllerPlayerId && room.controllerPlayerId !== player.id) {
+      // In racing mode, no control gating — anyone can move
+      const isRacing = room.phase === 'racing';
+
+      if (!isRacing && room.controllerPlayerId && room.controllerPlayerId !== player.id) {
         return {
           status: 409,
           body: await serializeRoomPayload(room, {
@@ -581,6 +707,33 @@ app.post('/api/rooms/:roomCode/move', async (req, res) => {
         };
       }
 
+      // Racing mode: simple +1 scoring, no control
+      if (isRacing) {
+        const raceMoveResult = applyRaceMove(room, player, candidateRoot, moveEdge, now);
+
+        let neighbors = await getNeighborOptionsForRoom(room);
+        if (neighbors.length === 0) {
+          room.status = 'completed';
+          room.reason = 'no_moves';
+          room.phase = 'completed';
+          neighbors = [];
+        }
+
+        return {
+          status: 200,
+          body: await serializeRoomPayload(room, {
+            player,
+            neighborEdges: neighbors,
+            now,
+            move: buildRoomMoveSummary(player, {
+              ...raceMoveResult,
+              edge: moveEdge,
+            }),
+          }),
+        };
+      }
+
+      // Legacy control-takeover mode (kept for backwards compatibility)
       const hadController = room.controllerPlayerId === player.id;
       const remainingBeforeMs = hadController
         ? getRoomControllerRemainingMs(room, now)
@@ -620,7 +773,7 @@ app.post('/api/rooms/:roomCode/move', async (req, res) => {
         room.reason = 'no_moves';
         room.controllerPlayerId = null;
         room.controllerExpiresAtMs = null;
-        room.phase = 'open_claim';
+        room.phase = 'completed';
         neighbors = [];
       }
 

@@ -6,7 +6,8 @@ import LetterCard from './components/LetterCard';
 import OpeningIntro from './components/OpeningIntro';
 import StreakBubble from './components/StreakBubble';
 import StreakPulse from './components/StreakPulse';
-import { advanceApiTime, isApiError, requestJson, resetApiTime } from './game/apiClient';
+import { advanceApiTime, isApiError, isRemoteApiConfigured, requestJson, resetApiTime } from './game/apiClient';
+import type { RoomPhase, RoomListPayload, RoomListEntry } from './game/apiClient';
 import { getLetterImageSrc } from './game/letterAssets';
 import {
   formatStreakTierRange,
@@ -136,6 +137,8 @@ type RoomPlayerSnapshot = {
   streak: number;
   longestStreak: number;
   takeovers: number;
+  validRoots: number;
+  ready: boolean;
   combo: {
     permutationChain: number;
     samePositionChain: number;
@@ -159,7 +162,7 @@ type RoomSnapshot = {
   language: LanguageMode;
   version: number;
   status: 'active' | 'completed';
-  phase: 'open_claim' | 'controlled';
+  phase: RoomPhase;
   reason: string | null;
   currentRoot: string;
   currentRootDotted: string;
@@ -176,6 +179,10 @@ type RoomSnapshot = {
   allowRevisit: boolean;
   types: MoveType[];
   letterBank: string[] | null;
+  raceStartedAtMs: number | null;
+  raceEndsAtMs: number | null;
+  raceRemainingMs: number;
+  countdownStartedAtMs: number | null;
   config: {
     countdownMs: number;
     bonusBaseMs: number;
@@ -183,6 +190,8 @@ type RoomSnapshot = {
     controlWindowMs: number;
     maxControlMs: number;
     maxPlayers: number;
+    gameDurationMs: number;
+    countdownDurationMs: number;
   };
   players: RoomPlayerSnapshot[];
   options: {
@@ -867,6 +876,9 @@ function GameApp() {
   const [serverHealthy, setServerHealthy] = useState<boolean | null>(null);
   const [loadingSession, setLoadingSession] = useState(false);
   const [loadingRoom, setLoadingRoom] = useState(false);
+  const [roomList, setRoomList] = useState<RoomListEntry[] | null>(null);
+  const [loadingRoomList, setLoadingRoomList] = useState(false);
+  const gameDurationMs = 90000;
   const [submittingMove, setSubmittingMove] = useState(false);
 
   const [errorText, setErrorText] = useState('');
@@ -1613,6 +1625,8 @@ function GameApp() {
       controlWindowMs,
       maxControlMs,
       maxPlayers: 4,
+      gameDurationMs,
+      countdownDurationMs: 3000,
     };
 
     const cleanedStart = startRootInput.trim();
@@ -1652,7 +1666,66 @@ function GameApp() {
     resetGameplayUi,
     roomPlayerNameInput,
     startRootInput,
+    gameDurationMs,
   ]);
+
+  const loadRoomList = useCallback(async () => {
+    if (!isRemoteApiConfigured) return;
+    setLoadingRoomList(true);
+    try {
+      const payload = await requestJson<RoomListPayload>('/api/rooms/list');
+      setRoomList(payload.rooms);
+    } catch (error: unknown) {
+      if (isApiError(error)) {
+        setErrorText(error.message);
+      }
+    } finally {
+      setLoadingRoomList(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (mode !== 'multiplayer' || room) return;
+    
+    let intervalId: number;
+    void loadRoomList().then(() => {
+      intervalId = window.setInterval(() => {
+        void loadRoomList();
+      }, 5000);
+    });
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [mode, room, loadRoomList]);
+
+  const toggleRoomReady = useCallback(async () => {
+    if (!room || !roomCodeRef.current) return;
+    try {
+      const payload = await requestJson<RoomPayload>(`/api/rooms/${encodeURIComponent(roomCodeRef.current)}/ready`, {
+        method: 'POST',
+      });
+      applyRoomPayload(payload, { syncLetters: false, preserveSelection: true });
+    } catch (error: unknown) {
+      if (isApiError(error)) {
+        setErrorText(error.message);
+      }
+    }
+  }, [room, applyRoomPayload]);
+
+  const startRoomRace = useCallback(async () => {
+    if (!room || !roomCodeRef.current) return;
+    try {
+      const payload = await requestJson<RoomPayload>(`/api/rooms/${encodeURIComponent(roomCodeRef.current)}/start`, {
+        method: 'POST',
+      });
+      applyRoomPayload(payload, { syncLetters: true });
+    } catch (error: unknown) {
+      if (isApiError(error)) {
+        setErrorText(error.message);
+      }
+    }
+  }, [room, applyRoomPayload]);
 
   const joinRoom = useCallback(async () => {
     const trimmedRoomCode = roomCodeInput.trim();
@@ -2733,7 +2806,8 @@ function GameApp() {
   const moveCountValue = activeSession?.moveCount ?? 0;
   const visitedCountValue = activeSession?.visitedCount ?? 0;
   const runStatus = activeSession?.status ?? 'idle';
-  const isActive = runStatus === 'active';
+  const isMultiplayerActivePhase = Boolean(mode === 'multiplayer' && room && (room.phase === 'countdown' || room.phase === 'racing'));
+  const isActive = runStatus === 'active' || isMultiplayerActivePhase;
   const compactTouchFeedback = isActive && prefersTouchInput;
   const mobileRewardFeedback = compactTouchFeedback
     ? getMobileRewardFeedback(bonusFlash, bonusFlashVisible, attemptFlash, attemptFlashVisible)
@@ -2743,8 +2817,15 @@ function GameApp() {
   const visibleReelFx = compactTouchFeedback ? null : reelFx;
   const visibleTimerBurstActive = timerBurstActive && !compactTouchFeedback;
   const visibleStreakPulse = compactTouchFeedback ? null : activeStreakPulse;
-  const displayRemainingMs = activeSession ? remainingMs : mode === 'multiplayer' ? controlWindowMs : countdownMs;
-  const displayTimerPct = activeSession ? timerPct : 100;
+
+  const displayRemainingMs = mode === 'multiplayer' && room
+    ? (room.phase === 'countdown' ? Math.max(0, (room.config.countdownDurationMs ?? 3000) - (clockMs - (room.countdownStartedAtMs ?? clockMs)) + timeOffsetMs) : room.raceRemainingMs)
+    : (activeSession ? remainingMs : countdownMs);
+
+  const displayTimerPct = mode === 'multiplayer' && room
+    ? (room.phase === 'racing' ? (room.raceRemainingMs / Math.max(1, room.config.gameDurationMs ?? 90000)) * 100 : 100)
+    : (activeSession ? timerPct : 100);
+
   const timerToneClass =
     displayRemainingMs > displayCountdownMs * 0.55
       ? 'bg-emerald-400'
@@ -2845,6 +2926,213 @@ function GameApp() {
             setValue: setBonusWindowMs,
           },
         ];
+
+  const renderLobbyBrowser = () => (
+    <div className="flex flex-col gap-6" dir="ltr">
+      <div className="grid gap-3 md:grid-cols-2">
+        <label className="rounded-[1.4rem] border border-slate-200 bg-slate-50 px-4 py-3">
+          <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
+            Your name
+          </div>
+          <input
+            value={roomPlayerNameInput}
+            onChange={(event) => setRoomPlayerNameInput(event.target.value)}
+            placeholder="Player name"
+            className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-base font-black text-slate-950 outline-none transition focus:border-sky-400"
+          />
+        </label>
+        <label className="rounded-[1.4rem] border border-slate-200 bg-slate-50 px-4 py-3">
+          <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
+            Room code
+          </div>
+          <div className="mt-2 flex gap-2">
+            <input
+              value={roomCodeInput}
+              onChange={(event) => setRoomCodeInput(event.target.value.toUpperCase())}
+              placeholder="Code"
+              className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-base font-black uppercase text-slate-950 outline-none transition focus:border-sky-400"
+            />
+            <button
+              type="button"
+              onClick={joinRoom}
+              disabled={loadingRoom || !roomCodeInput}
+              className="rounded-2xl bg-sky-100 px-4 py-3 font-black text-sky-800 transition hover:bg-sky-200 disabled:opacity-50"
+            >
+              Join
+            </button>
+          </div>
+        </label>
+      </div>
+
+      <div className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between mb-4">
+          <div className="font-black text-slate-800 text-lg">Active Rooms</div>
+          <button 
+            type="button"
+            onClick={loadRoomList}
+            disabled={loadingRoomList}
+            className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600 transition hover:bg-slate-200 disabled:opacity-50"
+          >
+            Refresh
+          </button>
+        </div>
+        
+        {loadingRoomList ? (
+          <div className="text-center py-6 text-sm font-bold text-slate-500">Loading rooms...</div>
+        ) : roomList && roomList.length > 0 ? (
+          <div className="grid gap-2 max-h-48 overflow-y-auto">
+            {roomList.map(r => (
+              <div key={r.code} className="flex justify-between items-center rounded-xl bg-slate-50 border border-slate-100 px-3 py-2">
+                <div>
+                  <div className="font-mono text-sm font-black text-slate-900">{r.code}</div>
+                  <div className="text-xs font-semibold text-slate-500">Host: {r.hostName}</div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="text-xs font-bold text-slate-700">
+                    {r.playerCount} / {r.maxPlayers}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                       setRoomCodeInput(r.code);
+                       void joinRoom();
+                    }}
+                    className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-slate-800"
+                  >
+                    Join
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-6 text-sm font-bold text-slate-500">No active rooms found. Create one to play!</div>
+        )}
+      </div>
+
+      <div className="flex justify-end pt-2">
+        <button
+          id="create-room-btn"
+          type="button"
+          onClick={createRoom}
+          disabled={loadingRoom}
+          className="rounded-[1.5rem] bg-slate-950 px-6 py-4 text-lg font-black text-white shadow-[0_20px_60px_-28px_rgba(15,23,42,0.88)] transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          {loadingRoom ? 'Working...' : 'Create new room'}
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderWaitingRoom = () => {
+    if (!room) return null;
+    const allReady = room.players.every(p => p.ready);
+    const self = roomPlayer ? room.players.find(p => p.id === roomPlayer.id) : null;
+    
+    return (
+      <div className="flex flex-col gap-6" dir="ltr">
+        <div className="flex justify-between items-start mb-2">
+          <div>
+            <div className="text-2xl font-black text-slate-900">Waiting Room</div>
+            <div className="mt-1 text-sm font-bold text-slate-500">Share code: <span className="font-mono bg-slate-100 px-2 py-0.5 rounded ml-1 text-slate-900 border border-slate-200">{room.code}</span></div>
+          </div>
+          <button
+            onClick={() => setRoom(null)}
+            className="text-xs font-bold text-slate-400 hover:text-slate-600 underline"
+          >
+            Leave
+          </button>
+        </div>
+
+        <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
+          <div className="text-[0.68rem] font-black uppercase tracking-[0.2em] text-slate-500 mb-3">Players ({room.players.length}/{room.config.maxPlayers})</div>
+          <div className="grid gap-2">
+            {room.players.map(p => (
+              <div key={p.id} className="flex justify-between items-center bg-white border border-slate-200 rounded-xl px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <div className="font-bold text-slate-800 tracking-tight text-lg">{p.name} {p.isSelf && <span className="text-xs tracking-normal bg-sky-100 border border-sky-200 text-sky-700 font-black px-2 py-0.5 rounded-full ml-1">You</span>} {p.isHost && <span className="text-xs tracking-normal bg-slate-200 text-slate-600 font-bold px-2 py-0.5 rounded ml-1">Host</span>}</div>
+                </div>
+                <div className={`font-black text-[0.65rem] uppercase tracking-widest px-3 py-1.5 rounded-full ${p.ready ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                  {p.ready ? 'Ready' : 'Not Ready'}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex justify-between items-center mt-2 flex-wrap gap-4">
+          <button
+            onClick={toggleRoomReady}
+            className={`rounded-[1.2rem] px-6 py-4 text-base font-black transition shadow-sm border ${self?.ready ? 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100' : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'}`}
+          >
+            {self?.ready ? 'Not ready' : 'Ready up!'}
+          </button>
+          
+          {self?.isHost ? (
+            <button
+              onClick={startRoomRace}
+              disabled={!allReady}
+              className="rounded-[1.2rem] bg-slate-950 px-6 py-4 text-base font-black text-white transition hover:-translate-y-0.5 shadow-[0_12px_28px_-12px_rgba(15,23,42,0.88)] hover:bg-slate-800 disabled:opacity-50 disabled:translate-y-0 disabled:shadow-none disabled:cursor-not-allowed"
+            >
+              Start Race
+            </button>
+          ) : (
+            <div className="text-sm font-bold text-slate-500 flex-1 text-right">
+              {allReady ? 'Waiting for host to start...' : 'Waiting for players to ready up...'}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderCompletedRoom = () => {
+    if (!room) return null;
+    const sortedPlayers = [...room.players].sort((a, b) => b.score - a.score);
+    const selfId = roomPlayer?.id;
+    const winnerId = sortedPlayers[0]?.id;
+
+    return (
+      <div className="flex flex-col gap-6" dir="ltr">
+        <div className="text-center">
+          <div className="text-3xl font-black text-slate-900">Race Finished!</div>
+          <div className="mt-2 text-sm font-bold text-slate-500">
+            {sortedPlayers[0]?.id === selfId ? 'You won!' : `${sortedPlayers[0]?.name || 'Somebody'} won.`}
+          </div>
+        </div>
+
+        <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
+          <div className="text-[0.68rem] font-black uppercase tracking-[0.2em] text-slate-500 mb-3">Final Standings</div>
+          <div className="grid gap-2">
+            {sortedPlayers.map((p, index) => (
+              <div key={p.id} className={`flex justify-between items-center bg-white border ${p.id === selfId ? 'border-sky-300 shadow-[0_4px_12px_rgba(56,189,248,0.2)]' : 'border-slate-200'} rounded-xl px-4 py-3 relative overflow-hidden`}>
+                {p.id === winnerId && <div className="absolute left-0 top-0 bottom-0 w-1 bg-amber-400"></div>}
+                <div className="flex items-center gap-3">
+                  <div className={`w-6 text-center font-black ${index === 0 ? 'text-amber-500 text-lg' : index === 1 ? 'text-slate-400 text-base' : index === 2 ? 'text-amber-700 text-base' : 'text-slate-300 text-sm'}`}>#{index + 1}</div>
+                  <div className="font-bold text-slate-800 tracking-tight text-lg">{p.name} {p.id === selfId && <span className="text-xs tracking-normal bg-sky-100 border border-sky-200 text-sky-700 font-black px-2 py-0.5 rounded-full ml-1">You</span>}</div>
+                </div>
+                <div className="flex items-center gap-4 text-right">
+                  <div>
+                    <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Score</div>
+                    <div className={`font-black text-xl ${p.id === winnerId ? 'text-amber-600' : 'text-slate-700'}`}>{p.score}</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex justify-center mt-2">
+          <button
+            onClick={() => setRoom(null)}
+            className="rounded-[1.2rem] bg-slate-900 px-6 py-4 text-base font-black text-white hover:bg-slate-800 transition"
+          >
+            Back to Lobby
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="relative min-h-[100dvh] overflow-hidden text-slate-900" dir="rtl">
@@ -3266,6 +3554,15 @@ function GameApp() {
               />
 
               <div className="pointer-events-none absolute inset-0 z-[21] shadow-[inset_0_0_20px_rgba(255,252,245,0.08),inset_0_-24px_38px_rgba(15,23,42,0.06)]" />
+
+              {mode === 'multiplayer' && room?.phase === 'countdown' ? (
+                <div className="absolute inset-0 z-40 bg-slate-900/60 flex flex-col items-center justify-center backdrop-blur-sm rounded-[1.8rem] pointer-events-auto">
+                  <div className="text-[clamp(6rem,24vw,12rem)] font-black text-white leading-none tabular-nums drop-shadow-[0_12px_24px_rgba(0,0,0,0.4)] animate-pulse">
+                    {Math.max(1, Math.ceil(((room.config.countdownDurationMs ?? 3000) - (clockMs - (room.countdownStartedAtMs ?? clockMs)) + timeOffsetMs) / 1000))}
+                  </div>
+                  <div className="text-sm font-bold uppercase tracking-[0.4em] text-white/80 mt-4 drop-shadow sm:text-xl">Get Ready</div>
+                </div>
+              ) : null}
 
               {showSetupOverlay ? (
                 <div
@@ -3719,57 +4016,17 @@ function GameApp() {
                     ) : null}
 
                     {!setupNeedsLanguageChoice ? (
-                    mode === 'multiplayer' ? (
-                      <>
-                        <div className="mt-4 grid gap-3 md:grid-cols-2">
-                          <label className="rounded-[1.4rem] border border-slate-200 bg-slate-50 px-4 py-3">
-                            <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
-                              Your name
-                            </div>
-                            <input
-                              value={roomPlayerNameInput}
-                              onChange={(event) => setRoomPlayerNameInput(event.target.value)}
-                              placeholder="Player name"
-                              className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-base font-black text-slate-950 outline-none transition focus:border-sky-400"
-                              dir="ltr"
-                            />
-                          </label>
-                          <label className="rounded-[1.4rem] border border-slate-200 bg-slate-50 px-4 py-3">
-                            <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
-                              Room code
-                            </div>
-                            <input
-                              value={roomCodeInput}
-                              onChange={(event) => setRoomCodeInput(event.target.value.toUpperCase())}
-                              placeholder="Join with code"
-                              className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-base font-black uppercase text-slate-950 outline-none transition focus:border-sky-400"
-                              dir="ltr"
-                            />
-                          </label>
-                        </div>
-
-                        <div className="mt-3 flex flex-wrap gap-3">
-                          <button
-                            id="create-room-btn"
-                            type="button"
-                            onClick={createRoom}
-                            disabled={loadingRoom}
-                            className="rounded-[1.5rem] bg-slate-950 px-6 py-4 text-lg font-black text-white shadow-[0_20px_60px_-28px_rgba(15,23,42,0.88)] transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
-                          >
-                            {loadingRoom ? 'Working...' : room ? 'New room' : 'Create room'}
-                          </button>
-                          <button
-                            id="join-room-btn"
-                            type="button"
-                            onClick={joinRoom}
-                            disabled={loadingRoom}
-                            className="rounded-[1.5rem] border border-slate-200 bg-white px-6 py-4 text-lg font-black text-slate-800 shadow-[0_20px_60px_-28px_rgba(15,23,42,0.2)] transition hover:-translate-y-0.5 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-70"
-                          >
-                            Join room
-                          </button>
-                        </div>
-                      </>
-                    ) : null
+                      mode === 'multiplayer' ? (
+                        room ? (
+                          room.phase === 'waiting' ? (
+                            renderWaitingRoom()
+                          ) : room.phase === 'completed' ? (
+                            renderCompletedRoom()
+                          ) : null
+                        ) : (
+                          renderLobbyBrowser()
+                        )
+                      ) : null
                     ) : null}
 
                     {!setupNeedsLanguageChoice && showAdvancedSetup ? (
