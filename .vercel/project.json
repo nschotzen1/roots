@@ -1,0 +1,16 @@
+{
+  "projectId": "prj_Zfig7Ra9EHvwmj5gfpzABYuvlOzj",
+  "orgId": "team_ExYn83lfFDxvwk5MNGJj3l0T",
+  "projectName": "roots",
+  "settings": {
+    "createdAt": 1774797367099,
+    "framework": "vite",
+    "devCommand": null,
+    "installCommand": null,
+    "buildCommand": null,
+    "outputDirectory": "dist",
+    "rootDirectory": null,
+    "directoryListing": false,
+    "nodeVersion": "24.x"
+  }
+}
