@@ -34,8 +34,8 @@ import {
 import {
   applyInvalidRoomMove,
   applyRaceMove,
+  advanceRoomLifecycle,
   buildRoomMoveSummary,
-  checkRaceTimeout,
   countRooms,
   createRoom,
   findRoomPlayerByToken,
@@ -404,6 +404,7 @@ app.post('/api/rooms/:roomCode/join', async (req, res) => {
       }
 
       const now = Date.now();
+      advanceRoomLifecycle(room, now);
       reconcileRoomControlState(room, now);
       const existingPlayer = findRoomPlayerByToken(room, req.body?.playerToken ?? req.body?.token);
 
@@ -470,6 +471,7 @@ app.post('/api/rooms/:roomCode/ready', async (req, res) => {
       }
 
       const now = Date.now();
+      advanceRoomLifecycle(room, now);
       const player = findRoomPlayerByToken(room, req.body?.playerToken ?? req.body?.token);
 
       if (!player) {
@@ -517,6 +519,7 @@ app.post('/api/rooms/:roomCode/start', async (req, res) => {
       }
 
       const now = Date.now();
+      advanceRoomLifecycle(room, now);
       const player = findRoomPlayerByToken(room, req.body?.playerToken ?? req.body?.token);
 
       if (!player) {
@@ -563,7 +566,7 @@ app.get('/api/rooms/:roomCode/state', async (req, res) => {
       }
 
       const now = Date.now();
-      checkRaceTimeout(room, now);
+      advanceRoomLifecycle(room, now);
       reconcileRoomControlState(room, now);
       const neighbors = room.status === 'active' ? await getNeighborOptionsForRoom(room) : [];
 
@@ -597,7 +600,7 @@ app.post('/api/rooms/:roomCode/move', async (req, res) => {
       }
 
       const now = Date.now();
-      checkRaceTimeout(room, now);
+      advanceRoomLifecycle(room, now);
       reconcileRoomControlState(room, now);
       const player = findRoomPlayerByToken(room, req.body?.playerToken ?? req.body?.token);
 

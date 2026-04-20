@@ -87,6 +87,7 @@ type MoveSummary = {
   samePositionChain?: number;
   samePositionIndex?: number | null;
   streakAfterMove?: number;
+  validRoots?: number;
   edge?: {
     type: MoveType;
     positionA: number;
@@ -1664,6 +1665,71 @@ const getRoomControllerRemainingMs = (room: InternalRoom, now = getNow()) => {
   return Math.max(0, room.controllerExpiresAtMs - now);
 };
 
+const getRoomRaceRemainingMs = (room: InternalRoom, now = getNow()) => {
+  if (room.phase !== 'racing' || !room.raceEndsAtMs) return 0;
+  return Math.max(0, room.raceEndsAtMs - now);
+};
+
+const startRoomRace = (room: InternalRoom, now = getNow()) => {
+  if (room.phase !== 'countdown') return false;
+
+  room.phase = 'racing';
+  room.raceStartedAtMs = now;
+  room.raceEndsAtMs = now + room.config.gameDurationMs;
+  room.turnStartedAtMs = now;
+  room.startedAtMs = now;
+  room.controllerPlayerId = null;
+  room.controllerExpiresAtMs = null;
+  room.updatedAtMs = now;
+  room.version += 1;
+
+  for (const player of room.players) {
+    player.score = 0;
+    player.streak = 0;
+    player.longestStreak = 0;
+    player.takeovers = 0;
+    player.validRoots = 0;
+    player.combo = createComboState();
+  }
+
+  return true;
+};
+
+const checkRoomRaceTimeout = (room: InternalRoom, now = getNow()) => {
+  if (room.phase !== 'racing' || room.status !== 'active') return false;
+  if (getRoomRaceRemainingMs(room, now) > 0) return false;
+
+  room.phase = 'completed';
+  room.status = 'completed';
+  room.reason = 'time_up';
+  room.controllerPlayerId = null;
+  room.controllerExpiresAtMs = null;
+  room.updatedAtMs = now;
+  room.version += 1;
+  return true;
+};
+
+const advanceRoomLifecycle = (room: InternalRoom, now = getNow()) => {
+  if (room.status !== 'active') return false;
+
+  let changed = false;
+
+  if (room.phase === 'countdown') {
+    const countdownStartedAtMs = room.countdownStartedAtMs ?? now;
+    const raceStartAtMs = countdownStartedAtMs + room.config.countdownDurationMs;
+
+    if (now >= raceStartAtMs) {
+      changed = startRoomRace(room, raceStartAtMs) || changed;
+    }
+  }
+
+  if (room.phase === 'racing') {
+    changed = checkRoomRaceTimeout(room, now) || changed;
+  }
+
+  return changed;
+};
+
 const findRoomPlayerByToken = (room: InternalRoom, token: unknown) => {
   const normalized = typeof token === 'string' && token.trim() ? token.trim() : null;
   if (!normalized) return null;
@@ -1695,9 +1761,9 @@ const serializeRoomPayload = async (
       excludeVisited: !room.allowRevisit,
       visited: room.allowRevisit ? [] : [...room.visited],
       letterBank: room.letterBank,
-    }));
+  }));
   const controllerRemainingMs = getRoomControllerRemainingMs(room, now);
-  const raceRemainingMs = room.raceEndsAtMs ? Math.max(0, room.raceEndsAtMs - now) : 0;
+  const raceRemainingMs = getRoomRaceRemainingMs(room, now);
 
   return {
     room: {
@@ -1995,7 +2061,7 @@ const reconcileRoomControlState = (room: InternalRoom, now = getNow()) => {
 
   room.controllerPlayerId = null;
   room.controllerExpiresAtMs = null;
-  room.phase = 'open_claim';
+  room.phase = room.phase === 'racing' ? 'racing' : 'open_claim';
   room.turnStartedAtMs = now;
   room.updatedAtMs = now;
   room.version += 1;
@@ -2067,8 +2133,9 @@ const handleRoomMove = async (roomCode: string, body: Record<string, unknown>) =
   const room = getRoomByCode(roomCode);
   const rooms = ensureLocalRoomState();
   const now = getNow();
+  const lifecycleChanged = advanceRoomLifecycle(room, now);
   const controlStateChanged = reconcileRoomControlState(room, now);
-  if (controlStateChanged) {
+  if (lifecycleChanged || controlStateChanged) {
     rooms.set(room.code, room);
     persistLocalRoomState();
   }
@@ -2079,7 +2146,10 @@ const handleRoomMove = async (roomCode: string, body: Record<string, unknown>) =
     { error: 'player_not_in_room', code: room.code },
   );
 
-  if (room.status !== 'active') {
+  if (
+    room.status !== 'active' ||
+    (room.phase !== 'racing' && room.phase !== 'open_claim' && room.phase !== 'controlled')
+  ) {
     fail(
       409,
       await serializeRoomPayload(room, {
@@ -2096,8 +2166,9 @@ const handleRoomMove = async (roomCode: string, body: Record<string, unknown>) =
   const candidateRoot = expectValue(parseBodyRoot(body.root, room.language), 400, {
     error: 'root is required',
   });
+  const isRacing = room.phase === 'racing';
 
-  if (room.controllerPlayerId && room.controllerPlayerId !== player.id) {
+  if (!isRacing && room.controllerPlayerId && room.controllerPlayerId !== player.id) {
     await failRoomMove({
       status: 409,
       room,
@@ -2159,6 +2230,51 @@ const handleRoomMove = async (roomCode: string, body: Record<string, unknown>) =
   }
 
   const safeMoveEdge = expectValue(moveEdge, 500, { error: 'move_edge_resolution_failed' });
+  if (isRacing) {
+    const elapsedMs = Math.max(0, now - room.turnStartedAtMs);
+
+    player.validRoots += 1;
+    player.score += 1;
+    player.streak += 1;
+    player.longestStreak = Math.max(player.longestStreak, player.streak);
+
+    room.currentRoot = candidateRoot;
+    room.visited.add(candidateRoot);
+    room.moveCount += 1;
+    room.turnStartedAtMs = now;
+    room.reason = null;
+
+    let neighbors = await getNeighborOptionsForRoom(room);
+    if (neighbors.length === 0) {
+      room.status = 'completed';
+      room.reason = 'no_moves';
+      room.phase = 'completed';
+      room.controllerPlayerId = null;
+      room.controllerExpiresAtMs = null;
+      neighbors = [];
+    }
+
+    room.updatedAtMs = now;
+    room.version += 1;
+    rooms.set(room.code, room);
+    persistLocalRoomState();
+
+    return serializeRoomPayload(room, {
+      player,
+      neighborEdges: neighbors,
+      now,
+      move: buildRoomMoveSummary(player, {
+        ok: true,
+        scoreGain: 1,
+        validRoots: player.validRoots,
+        streakAfterMove: player.streak,
+        edge: safeMoveEdge,
+        elapsedMs,
+        remainingBeforeMs: getRoomRaceRemainingMs(room, now),
+      }),
+    });
+  }
+
   const hadController = room.controllerPlayerId === player.id;
   const remainingBeforeMs = hadController
     ? getRoomControllerRemainingMs(room, now)
@@ -2253,7 +2369,7 @@ const handleCreateRoom = async (body: Record<string, unknown>) => {
     language,
     version: 1,
     status: 'active',
-    phase: 'open_claim',
+    phase: 'waiting',
     reason: null,
     createdAtMs: now,
     updatedAtMs: now,
@@ -2303,7 +2419,8 @@ const handleJoinRoom = async (roomCode: string, body: Record<string, unknown>) =
   const room = getRoomByCode(roomCode);
   const now = getNow();
   const rooms = ensureLocalRoomState();
-  let didChangeRoom = reconcileRoomControlState(room, now);
+  let didChangeRoom = advanceRoomLifecycle(room, now);
+  didChangeRoom = reconcileRoomControlState(room, now) || didChangeRoom;
   const existingPlayer = findRoomPlayerByToken(room, body.playerToken ?? body.token);
 
   if (existingPlayer) {
@@ -2317,6 +2434,14 @@ const handleJoinRoom = async (roomCode: string, body: Record<string, unknown>) =
       error: 'room_full',
       code: room.code,
       maxPlayers: room.config.maxPlayers,
+    });
+  }
+
+  if (room.phase !== 'waiting') {
+    fail(409, {
+      error: 'room_not_accepting_players',
+      code: room.code,
+      phase: room.phase,
     });
   }
 
@@ -2341,7 +2466,8 @@ const handleJoinRoom = async (roomCode: string, body: Record<string, unknown>) =
 const handleRoomState = async (roomCode: string, playerToken: unknown) => {
   const room = getRoomByCode(roomCode);
   const now = getNow();
-  const didChangeRoom = reconcileRoomControlState(room, now);
+  let didChangeRoom = advanceRoomLifecycle(room, now);
+  didChangeRoom = reconcileRoomControlState(room, now) || didChangeRoom;
   if (didChangeRoom) persistLocalRoomState();
   const neighbors = room.status === 'active' ? await getNeighborOptionsForRoom(room) : [];
   return serializeRoomPayload(room, {
@@ -2546,15 +2672,87 @@ const handlePath = async (body: Record<string, unknown>) => {
 };
 
 const handleRoomList = async () => {
-  fail(501, { error: 'multiplayer_disabled_in_local_mode' });
+  const rooms = ensureLocalRoomState();
+  const now = getNow();
+  let changed = false;
+
+  for (const room of rooms.values()) {
+    changed = advanceRoomLifecycle(room, now) || changed;
+  }
+
+  if (changed) persistLocalRoomState();
+
+  return {
+    rooms: [...rooms.values()]
+      .filter((room) => room.status === 'active' && room.phase === 'waiting')
+      .map((room) => ({
+        code: room.code,
+        playerCount: room.players.length,
+        maxPlayers: room.config.maxPlayers,
+        gameDurationMs: room.config.gameDurationMs,
+        hostName: room.players.find((player) => player.isHost)?.name || 'Unknown',
+        createdAtMs: room.createdAtMs,
+      })),
+  };
 };
 
-const handleRoomReady = async (_roomCode: string, _body: Record<string, unknown>) => {
-  fail(501, { error: 'multiplayer_disabled_in_local_mode' });
+const handleRoomReady = async (roomCode: string, body: Record<string, unknown>) => {
+  const room = getRoomByCode(roomCode);
+  const rooms = ensureLocalRoomState();
+  const now = getNow();
+  advanceRoomLifecycle(room, now);
+  const player = expectValue(
+    findRoomPlayerByToken(room, body.playerToken ?? body.token),
+    401,
+    { error: 'player_not_in_room', code: room.code },
+  );
+
+  if (room.phase !== 'waiting') {
+    fail(409, { error: 'room_not_in_waiting_phase', code: room.code, phase: room.phase });
+  }
+
+  player.ready = !player.ready;
+  room.updatedAtMs = now;
+  room.version += 1;
+
+  const allReady = room.players.length >= 2 && room.players.every((candidate) => candidate.ready);
+  if (allReady) {
+    room.phase = 'countdown';
+    room.countdownStartedAtMs = now;
+    room.updatedAtMs = now;
+    room.version += 1;
+  }
+
+  rooms.set(room.code, room);
+  persistLocalRoomState();
+  const neighbors = await getNeighborOptionsForRoom(room);
+  return serializeRoomPayload(room, {
+    player,
+    neighborEdges: neighbors,
+    now,
+    move: buildRoomMoveSummary(player, { ok: true }),
+  });
 };
 
-const handleRoomStart = async (_roomCode: string, _body: Record<string, unknown>) => {
-  fail(501, { error: 'multiplayer_disabled_in_local_mode' });
+const handleRoomStart = async (roomCode: string, body: Record<string, unknown>) => {
+  const room = getRoomByCode(roomCode);
+  const rooms = ensureLocalRoomState();
+  const now = getNow();
+  const player = expectValue(
+    findRoomPlayerByToken(room, body.playerToken ?? body.token),
+    401,
+    { error: 'player_not_in_room', code: room.code },
+  );
+
+  if (room.phase !== 'countdown') {
+    fail(409, { error: 'room_not_in_countdown_phase', code: room.code, phase: room.phase });
+  }
+
+  startRoomRace(room, now);
+  rooms.set(room.code, room);
+  persistLocalRoomState();
+  const neighbors = await getNeighborOptionsForRoom(room);
+  return serializeRoomPayload(room, { player, neighborEdges: neighbors, now });
 };
 
 const requestRemoteJson = async <T,>(path: string, init?: RequestInit): Promise<T> => {

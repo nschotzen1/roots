@@ -6,7 +6,7 @@ import LetterCard from './components/LetterCard';
 import OpeningIntro from './components/OpeningIntro';
 import StreakBubble from './components/StreakBubble';
 import StreakPulse from './components/StreakPulse';
-import { advanceApiTime, isApiError, isRemoteApiConfigured, requestJson, resetApiTime } from './game/apiClient';
+import { advanceApiTime, isApiError, requestJson, resetApiTime } from './game/apiClient';
 import type { RoomPhase, RoomListPayload, RoomListEntry } from './game/apiClient';
 import { getLetterImageSrc } from './game/letterAssets';
 import {
@@ -104,6 +104,7 @@ type MoveSummary = {
   samePositionChain?: number;
   samePositionIndex?: number | null;
   streakAfterMove?: number;
+  validRoots?: number;
   edge?: {
     type: MoveType;
     positionA: number;
@@ -868,8 +869,10 @@ function GameApp() {
   const [countdownMs, setCountdownMs] = useState(DEFAULT_COUNTDOWN_MS);
   const [bonusBaseMs, setBonusBaseMs] = useState(DEFAULT_BONUS_BASE_MS);
   const [bonusWindowMs, setBonusWindowMs] = useState(DEFAULT_BONUS_WINDOW_MS);
-  const [controlWindowMs, setControlWindowMs] = useState(DEFAULT_CONTROL_WINDOW_MS);
-  const [maxControlMs, setMaxControlMs] = useState(DEFAULT_MAX_CONTROL_MS);
+  const controlWindowMs = DEFAULT_CONTROL_WINDOW_MS;
+  const maxControlMs = DEFAULT_MAX_CONTROL_MS;
+  const [gameDurationMs, setGameDurationMs] = useState(90_000);
+  const [raceCountdownDurationMs, setRaceCountdownDurationMs] = useState(3_000);
   const [showAdvancedSetup, setShowAdvancedSetup] = useState(false);
   const [setupStage, setSetupStage] = useState<'language' | 'ready'>('language');
 
@@ -878,7 +881,6 @@ function GameApp() {
   const [loadingRoom, setLoadingRoom] = useState(false);
   const [roomList, setRoomList] = useState<RoomListEntry[] | null>(null);
   const [loadingRoomList, setLoadingRoomList] = useState(false);
-  const gameDurationMs = 90000;
   const [submittingMove, setSubmittingMove] = useState(false);
 
   const [errorText, setErrorText] = useState('');
@@ -939,6 +941,21 @@ function GameApp() {
   );
   const activeSession = useMemo<SessionSnapshot | null>(() => {
     if (room) {
+      const roomTimerBudgetMs =
+        room.phase === 'racing'
+          ? room.config.gameDurationMs
+          : room.phase === 'countdown'
+            ? room.config.countdownDurationMs
+            : room.config.controlWindowMs;
+      const roomRemainingMs =
+        room.phase === 'racing'
+          ? room.raceRemainingMs
+          : room.phase === 'countdown'
+            ? room.config.countdownDurationMs
+            : room.controllerPlayerId
+              ? room.controllerRemainingMs
+              : room.config.controlWindowMs;
+
       return {
         id: room.id,
         mode: 'survival',
@@ -960,16 +977,18 @@ function GameApp() {
         allowRevisit: room.allowRevisit,
         types: room.types,
         letterBank: room.letterBank,
-        turnBudgetMs: room.config.controlWindowMs,
-        remainingMs: room.controllerPlayerId ? room.controllerRemainingMs : room.config.controlWindowMs,
+        turnBudgetMs: roomTimerBudgetMs,
+        remainingMs: roomRemainingMs,
         turnStartedAtMs: room.turnStartedAtMs,
         turnEndsAtMs:
-          room.controllerExpiresAtMs ?? room.turnStartedAtMs + room.config.controlWindowMs,
+          room.phase === 'racing' && room.raceEndsAtMs
+            ? room.raceEndsAtMs
+            : room.controllerExpiresAtMs ?? room.turnStartedAtMs + roomTimerBudgetMs,
         createdAtMs: room.createdAtMs,
         updatedAtMs: room.updatedAtMs,
         endedAtMs: room.status === 'completed' ? room.updatedAtMs : null,
         config: {
-          countdownMs: room.config.controlWindowMs,
+          countdownMs: roomTimerBudgetMs,
           bonusBaseMs: room.config.bonusBaseMs,
           bonusWindowMs: room.config.bonusWindowMs,
         },
@@ -984,7 +1003,7 @@ function GameApp() {
   const canInteractWithBoard = Boolean(
     activeSession &&
       activeSession.status === 'active' &&
-      (!room || room.phase === 'open_claim' || roomIsControlledBySelf),
+      (!room || room.phase === 'racing' || room.phase === 'open_claim' || roomIsControlledBySelf),
   );
   const activeLanguageMode = activeSession?.language ?? languageMode;
   const activeLanguageNativeLabel = LANGUAGE_NATIVE_LABELS[activeLanguageMode];
@@ -1026,6 +1045,21 @@ function GameApp() {
   const isCandidateValid = useMemo(() => neighborsSet.has(candidatePlain), [neighborsSet, candidatePlain]);
 
   const virtualNowMs = clockMs + timeOffsetMs;
+  const roomCountdownRemainingMs =
+    mode === 'multiplayer' && room?.phase === 'countdown'
+      ? Math.max(
+          0,
+          (room.config.countdownDurationMs ?? 3000) -
+            (virtualNowMs - (room.countdownStartedAtMs ?? virtualNowMs)),
+        )
+      : 0;
+  const roomRaceRemainingMs =
+    mode === 'multiplayer' && room?.phase === 'racing'
+      ? Math.max(
+          0,
+          room.raceEndsAtMs ? room.raceEndsAtMs - virtualNowMs : room.raceRemainingMs,
+        )
+      : 0;
   const remainingMs = useMemo(() => {
     if (!activeSession) return 0;
     const elapsed = virtualNowMs - syncClientMs;
@@ -1626,7 +1660,7 @@ function GameApp() {
       maxControlMs,
       maxPlayers: 4,
       gameDurationMs,
-      countdownDurationMs: 3000,
+      countdownDurationMs: raceCountdownDurationMs,
     };
 
     const cleanedStart = startRootInput.trim();
@@ -1644,7 +1678,7 @@ function GameApp() {
       setRoomCodeInput(payload.room.code);
       setServerHealthy(true);
       setInfoText(
-        `Room ${payload.room.code} live. First valid root claims control, then streaks extend the timer.`,
+        `Room ${payload.room.code} is ready. Share the code, ready up, then race the countdown.`,
       );
     } catch (error: unknown) {
       if (isApiError(error)) {
@@ -1664,13 +1698,13 @@ function GameApp() {
     countdownMs,
     maxControlMs,
     resetGameplayUi,
+    raceCountdownDurationMs,
     roomPlayerNameInput,
     startRootInput,
     gameDurationMs,
   ]);
 
   const loadRoomList = useCallback(async () => {
-    if (!isRemoteApiConfigured) return;
     setLoadingRoomList(true);
     try {
       const payload = await requestJson<RoomListPayload>('/api/rooms/list');
@@ -1699,28 +1733,36 @@ function GameApp() {
     };
   }, [mode, room, loadRoomList]);
 
+  const pollingRoomCode = room?.code ?? null;
+  const pollingRoomPhase = room?.phase ?? null;
+  const pollingPlayerToken = roomPlayer?.token ?? null;
+
   useEffect(() => {
-    if (!room || !roomCodeRef.current || room.phase === 'completed' || isRemoteApiConfigured === false) return;
+    if (!pollingRoomCode || !pollingPlayerToken || pollingRoomPhase === 'completed') return;
     if (mode !== 'multiplayer') return;
 
     let fetching = false;
     const intervalId = window.setInterval(() => {
       if (fetching) return;
       fetching = true;
-      requestJson<RoomPayload>(`/api/rooms/${encodeURIComponent(roomCodeRef.current!)}/state`)
+      requestJson<RoomPayload>(
+        `/api/rooms/${encodeURIComponent(pollingRoomCode)}/state?playerToken=${encodeURIComponent(pollingPlayerToken)}`,
+      )
         .then((payload) => applyRoomPayload(payload, { syncLetters: false, preserveSelection: true }))
         .catch(() => {})
         .finally(() => { fetching = false; });
     }, 1000);
 
     return () => window.clearInterval(intervalId);
-  }, [mode, room?.phase, applyRoomPayload]);
+  }, [mode, pollingPlayerToken, pollingRoomCode, pollingRoomPhase, applyRoomPayload]);
 
   const toggleRoomReady = useCallback(async () => {
-    if (!room || !roomCodeRef.current) return;
+    if (!room || !roomCodeRef.current || !roomPlayer?.token) return;
     try {
       const payload = await requestJson<RoomPayload>(`/api/rooms/${encodeURIComponent(roomCodeRef.current)}/ready`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerToken: roomPlayer.token }),
       });
       applyRoomPayload(payload, { syncLetters: false, preserveSelection: true });
     } catch (error: unknown) {
@@ -1728,12 +1770,10 @@ function GameApp() {
         setErrorText(error.message);
       }
     }
-  }, [room, applyRoomPayload]);
+  }, [room, roomPlayer?.token, applyRoomPayload]);
 
-
-
-  const joinRoom = useCallback(async () => {
-    const trimmedRoomCode = roomCodeInput.trim();
+  const joinRoomWithCode = useCallback(async (rawRoomCode: string) => {
+    const trimmedRoomCode = rawRoomCode.trim();
     if (!trimmedRoomCode) {
       setErrorText('Enter a room code');
       return;
@@ -1762,9 +1802,13 @@ function GameApp() {
       setRoomCodeInput(payload.room.code);
       setServerHealthy(true);
       setInfoText(
-        payload.room.phase === 'open_claim'
-          ? `Joined room ${payload.room.code}. The board is open.`
-          : `Joined room ${payload.room.code}. ${payload.room.players.find((candidate) => candidate.id === payload.room.controllerPlayerId)?.name ?? 'Another player'} currently controls the board.`,
+        payload.room.phase === 'waiting'
+          ? `Joined room ${payload.room.code}. Ready up when everyone is in.`
+          : payload.room.phase === 'countdown'
+            ? `Joined room ${payload.room.code}. Race starts now.`
+            : payload.room.phase === 'racing'
+              ? `Joined room ${payload.room.code}. Race is live.`
+              : `Joined room ${payload.room.code}.`,
       );
     } catch (error: unknown) {
       if (isApiError(error)) {
@@ -1779,10 +1823,13 @@ function GameApp() {
     applyRoomPayload,
     resetGameplayUi,
     room?.code,
-    roomCodeInput,
     roomPlayer?.token,
     roomPlayerNameInput,
   ]);
+
+  const joinRoom = useCallback(async () => {
+    await joinRoomWithCode(roomCodeInput);
+  }, [joinRoomWithCode, roomCodeInput]);
 
   const refreshSessionState = useCallback(
     async (syncLetters: boolean) => {
@@ -2035,7 +2082,11 @@ function GameApp() {
                 : [payload.move.edge.positionA]
               : [];
           const moveLabel =
-            payload.move.controlChange === 'claimed'
+            room?.phase === 'racing' || payload.room.phase === 'racing'
+              ? payload.move.edge?.type === 'SWAP'
+                ? 'Swap scored'
+                : 'Root scored'
+              : payload.move.controlChange === 'claimed'
               ? 'Control claimed'
               : payload.move.edge?.type === 'SWAP'
                 ? 'Swap jackpot'
@@ -2049,23 +2100,27 @@ function GameApp() {
           );
           triggerValidMotion();
           setInfoText(
-            `${moveLabel}. +${scoreGain} score${comboDescriptor ? ` · ${comboDescriptor.detail}` : ''} · ${formatSeconds(payload.move.controlRemainingMs ?? 0)} control left.`,
+            payload.room.phase === 'racing'
+              ? `${moveLabel}. +${scoreGain} score${comboDescriptor ? ` · ${comboDescriptor.detail}` : ''}.`
+              : `${moveLabel}. +${scoreGain} score${comboDescriptor ? ` · ${comboDescriptor.detail}` : ''} · ${formatSeconds(payload.move.controlRemainingMs ?? 0)} control left.`,
           );
-          showBonusFlash({
-            bonusMs,
-            multiplier,
-            elapsedMs,
-            scoreGain,
-            moveType: payload.move.edge?.type ?? null,
-            comboLabel: comboDescriptor?.label ?? null,
-            comboCount: payload.move.comboCount ?? 0,
-            chainBonusScore,
-            streakBonusScore,
-            streakBonusMs,
-            comboBonusMs,
-            streakAfterMove,
-            comboSlots,
-          });
+          if (payload.room.phase !== 'racing') {
+            showBonusFlash({
+              bonusMs,
+              multiplier,
+              elapsedMs,
+              scoreGain,
+              moveType: payload.move.edge?.type ?? null,
+              comboLabel: comboDescriptor?.label ?? null,
+              comboCount: payload.move.comboCount ?? 0,
+              chainBonusScore,
+              streakBonusScore,
+              streakBonusMs,
+              comboBonusMs,
+              streakAfterMove,
+              comboSlots,
+            });
+          }
         }
       } catch (error: unknown) {
         if (isApiError(error)) {
@@ -2140,6 +2195,7 @@ function GameApp() {
       dragSourceIdx,
       focusTypingInput,
       roomPlayer?.token,
+      room?.phase,
       selectedIdx,
       showAttemptFlash,
       showBonusFlash,
@@ -2638,6 +2694,8 @@ function GameApp() {
           ? {
               code: room.code,
               phase: room.phase,
+              countdownRemainingMs: room.phase === 'countdown' ? Math.round(roomCountdownRemainingMs) : 0,
+              raceRemainingMs: room.phase === 'racing' ? Math.round(roomRaceRemainingMs) : 0,
               controllerPlayerId: room.controllerPlayerId,
               controllerName: activeController?.name ?? null,
               controllerRemainingMs: room.controllerRemainingMs,
@@ -2648,6 +2706,8 @@ function GameApp() {
                 name: player.name,
                 score: player.score,
                 streak: player.streak,
+                validRoots: player.validRoots,
+                ready: player.ready,
                 takeovers: player.takeovers,
                 isSelf: player.isSelf,
               })),
@@ -2770,7 +2830,9 @@ function GameApp() {
     mode,
     neighborsSet,
     room,
+    roomCountdownRemainingMs,
     roomPlayer?.id,
+    roomRaceRemainingMs,
     activeController?.name,
     activeRoomPlayer?.name,
     pendingSuggestionsCount,
@@ -2812,7 +2874,7 @@ function GameApp() {
   const visitedCountValue = activeSession?.visitedCount ?? 0;
   const runStatus = activeSession?.status ?? 'idle';
   const isMultiplayerActivePhase = Boolean(mode === 'multiplayer' && room && (room.phase === 'countdown' || room.phase === 'racing'));
-  const isActive = runStatus === 'active' || isMultiplayerActivePhase;
+  const isActive = mode === 'multiplayer' && room ? isMultiplayerActivePhase : runStatus === 'active';
   const compactTouchFeedback = isActive && prefersTouchInput;
   const mobileRewardFeedback = compactTouchFeedback
     ? getMobileRewardFeedback(bonusFlash, bonusFlashVisible, attemptFlash, attemptFlashVisible)
@@ -2824,11 +2886,13 @@ function GameApp() {
   const visibleStreakPulse = compactTouchFeedback ? null : activeStreakPulse;
 
   const displayRemainingMs = mode === 'multiplayer' && room
-    ? (room.phase === 'countdown' ? Math.max(0, (room.config.countdownDurationMs ?? 3000) - (clockMs - (room.countdownStartedAtMs ?? clockMs)) + timeOffsetMs) : room.raceRemainingMs)
+    ? (room.phase === 'countdown' ? roomCountdownRemainingMs : roomRaceRemainingMs)
     : (activeSession ? remainingMs : countdownMs);
 
   const displayTimerPct = mode === 'multiplayer' && room
-    ? (room.phase === 'racing' ? (room.raceRemainingMs / Math.max(1, room.config.gameDurationMs ?? 90000)) * 100 : 100)
+    ? room.phase === 'countdown'
+      ? (roomCountdownRemainingMs / Math.max(1, room.config.countdownDurationMs ?? 3000)) * 100
+      : (roomRaceRemainingMs / Math.max(1, room.config.gameDurationMs ?? 90000)) * 100
     : (activeSession ? timerPct : 100);
 
   const timerToneClass =
@@ -2837,21 +2901,35 @@ function GameApp() {
       : displayRemainingMs > displayCountdownMs * 0.25
         ? 'bg-amber-400'
         : 'bg-rose-400';
-  const sessionStateLabel = !activeSession
-    ? mode === 'multiplayer'
-      ? 'Waiting for room'
-      : 'Waiting to start'
-    : activeSession.status === 'completed'
-      ? 'Run complete'
-      : activeSession.status === 'game_over'
-        ? 'Game over'
-        : 'Live';
+  const sessionStateLabel = room
+    ? room.phase === 'waiting'
+      ? 'Lobby'
+      : room.phase === 'countdown'
+        ? 'Starting'
+        : room.phase === 'racing'
+          ? 'Race live'
+          : room.phase === 'completed'
+            ? 'Race finished'
+            : 'Room live'
+    : !activeSession
+      ? mode === 'multiplayer'
+        ? 'Waiting for room'
+        : 'Waiting to start'
+      : activeSession.status === 'completed'
+        ? 'Run complete'
+        : activeSession.status === 'game_over'
+          ? 'Game over'
+          : 'Live';
   const helperText = !activeSession
     ? mode === 'multiplayer'
       ? 'Create a room or join one with a code.'
       : 'Set the timer and start a run.'
     : !isActive
       ? formatReason(activeSession.reason) || (mode === 'multiplayer' ? 'Room finished.' : 'Run finished.')
+      : mode === 'multiplayer' && room?.phase === 'countdown'
+        ? 'Get ready. The race starts after the countdown.'
+        : mode === 'multiplayer' && room?.phase === 'racing'
+          ? 'Race live. Every valid root adds to your score.'
       : mode === 'multiplayer' && room && room.controllerPlayerId && room.controllerPlayerId !== roomPlayer?.id
         ? `${activeController?.name ?? 'Another player'} is in control. Wait for the window to expire or for a room update.`
         : mode === 'multiplayer' && room?.phase === 'open_claim'
@@ -2866,7 +2944,8 @@ function GameApp() {
             ? `${selectedSlotLabel} selected. Pick a ${LANGUAGE_LABELS[activeLanguageMode]} letter, drag any reel onto another to swap, or tap the same reel or outside the board to clear.`
             : `${selectedSlotLabel} selected. Type a ${LANGUAGE_LABELS[activeLanguageMode]} letter, drag any reel onto another to swap, or tap the same reel or outside the board to clear.`;
   const showSetupOverlay = !isActive;
-  const showSummary = Boolean(activeSession && !isActive);
+  const showSummary = Boolean(activeSession && !isActive && !(mode === 'multiplayer' && room?.phase === 'waiting'));
+  const showRoomWaitingOverlay = Boolean(mode === 'multiplayer' && room?.phase === 'waiting');
   const setupNeedsLanguageChoice = Boolean(showSetupOverlay && !showSummary && setupStage === 'language');
   const showJourneyFailureSolution = Boolean(showSummary && journeySolutionRequest);
   const activeComboBurst =
@@ -2887,28 +2966,16 @@ function GameApp() {
     mode === 'multiplayer'
       ? [
           {
-            id: 'bonusBase',
-            label: 'Base bonus',
-            value: bonusBaseMs,
-            setValue: setBonusBaseMs,
+            id: 'raceLength',
+            label: 'Race clock',
+            value: gameDurationMs,
+            setValue: setGameDurationMs,
           },
           {
-            id: 'bonusWindow',
-            label: 'Speed window',
-            value: bonusWindowMs,
-            setValue: setBonusWindowMs,
-          },
-          {
-            id: 'controlWindow',
-            label: 'Claim window',
-            value: controlWindowMs,
-            setValue: setControlWindowMs,
-          },
-          {
-            id: 'maxControl',
-            label: 'Control cap',
-            value: maxControlMs,
-            setValue: setMaxControlMs,
+            id: 'raceCountdown',
+            label: 'Start count',
+            value: raceCountdownDurationMs,
+            setValue: setRaceCountdownDurationMs,
           },
         ]
       : [
@@ -2931,6 +2998,96 @@ function GameApp() {
             setValue: setBonusWindowMs,
           },
         ];
+
+  const renderRoomScoreboard = (variant: 'lobby' | 'live' | 'final' = 'live') => {
+    if (!room) return null;
+
+    const sortedPlayers = [...room.players].sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      if (right.validRoots !== left.validRoots) return right.validRoots - left.validRoots;
+      return left.joinedAtMs - right.joinedAtMs;
+    });
+    const selfId = roomPlayer?.id;
+    const leaderId = sortedPlayers[0]?.id ?? null;
+    const isLobby = variant === 'lobby';
+
+    return (
+      <div
+        id="room-scoreboard"
+        className={[
+          'w-full rounded-[1.2rem] border bg-white/90 p-3 text-left shadow-[0_18px_44px_-34px_rgba(15,23,42,0.5)] backdrop-blur',
+          isLobby ? 'border-slate-200' : 'border-emerald-200',
+        ].join(' ')}
+        dir="ltr"
+      >
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="text-[0.66rem] font-black uppercase tracking-[0.24em] text-slate-500">
+              {variant === 'final' ? 'Final scoreboard' : 'Scoreboard'}
+            </div>
+            <div className="mt-1 text-lg font-black text-slate-950">
+              Room {room.code}
+            </div>
+          </div>
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.18em] text-slate-600">
+            {room.phase === 'waiting'
+              ? `${room.players.length}/${room.config.maxPlayers} players`
+              : room.phase === 'countdown'
+                ? 'Starting'
+                : room.phase === 'racing'
+                  ? `${formatSeconds(roomRaceRemainingMs)} left`
+                  : 'Finished'}
+          </span>
+        </div>
+
+        <div className="grid gap-2">
+          {sortedPlayers.map((player, index) => {
+            const isSelf = player.id === selfId || player.isSelf;
+            const isLeader = player.id === leaderId && !isLobby;
+
+            return (
+              <div
+                key={player.id}
+                className={[
+                  'grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-[0.8rem] border px-3 py-2',
+                  isSelf
+                    ? 'border-slate-950 bg-slate-950 text-white'
+                    : isLeader
+                      ? 'border-amber-200 bg-amber-50 text-slate-900'
+                      : 'border-slate-200 bg-white text-slate-800',
+                ].join(' ')}
+              >
+                <div className={['w-8 text-center text-sm font-black', isLeader ? 'text-amber-600' : ''].join(' ')}>
+                  #{index + 1}
+                </div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-black">
+                    {player.name}
+                    {isSelf ? <span className="ml-2 text-[0.62rem] uppercase tracking-[0.18em] opacity-75">You</span> : null}
+                  </div>
+                  <div className={['mt-0.5 text-[0.62rem] font-black uppercase tracking-[0.16em]', isSelf ? 'text-white/68' : 'text-slate-500'].join(' ')}>
+                    {room.phase === 'waiting'
+                      ? player.ready
+                        ? 'Ready'
+                        : 'Not ready'
+                      : `${player.validRoots} roots · x${player.streak}`}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className={['text-[0.58rem] font-black uppercase tracking-[0.16em]', isSelf ? 'text-white/60' : 'text-slate-400'].join(' ')}>
+                    Score
+                  </div>
+                  <div className="text-2xl font-black leading-none tabular-nums">
+                    {player.score}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
   const renderLobbyBrowser = () => (
     <div className="flex flex-col gap-6" dir="ltr">
@@ -3000,7 +3157,7 @@ function GameApp() {
                     type="button"
                     onClick={() => {
                        setRoomCodeInput(r.code);
-                       void joinRoom();
+                       void joinRoomWithCode(r.code);
                     }}
                     className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-slate-800"
                   >
@@ -3031,7 +3188,7 @@ function GameApp() {
 
   const renderWaitingRoom = () => {
     if (!room) return null;
-    const allReady = room.players.every(p => p.ready);
+    const allReady = room.players.length >= 2 && room.players.every(p => p.ready);
     const self = roomPlayer ? room.players.find(p => p.id === roomPlayer.id) : null;
     
     return (
@@ -3042,7 +3199,12 @@ function GameApp() {
             <div className="mt-1 text-sm font-bold text-slate-500">Share code: <span className="font-mono bg-slate-100 px-2 py-0.5 rounded ml-1 text-slate-900 border border-slate-200">{room.code}</span></div>
           </div>
           <button
-            onClick={() => setRoom(null)}
+            type="button"
+            onClick={() => {
+              setRoom(null);
+              setRoomPlayer(null);
+              roomCodeRef.current = null;
+            }}
             className="text-xs font-bold text-slate-400 hover:text-slate-600 underline"
           >
             Leave
@@ -3065,16 +3227,24 @@ function GameApp() {
           </div>
         </div>
 
+        {renderRoomScoreboard('lobby')}
+
         <div className="flex justify-between items-center mt-2 flex-wrap gap-4">
           <button
+            type="button"
             onClick={toggleRoomReady}
+            disabled={!roomPlayer?.token}
             className={`rounded-[1.2rem] px-6 py-4 text-base font-black transition shadow-sm border ${self?.ready ? 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100' : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'}`}
           >
             {self?.ready ? 'Not ready' : 'Ready up!'}
           </button>
           
           <div className="text-sm font-bold text-slate-500 flex-1 text-right">
-            {allReady ? 'Starting race...' : 'Waiting for all players to ready up...'}
+            {room.players.length < 2
+              ? 'Waiting for one more player...'
+              : allReady
+                ? 'Starting 3-2-1 countdown...'
+                : 'Ready up to start the 3-2-1 countdown.'}
           </div>
         </div>
       </div>
@@ -3096,7 +3266,7 @@ function GameApp() {
           </div>
         </div>
 
-        <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
+        <div id="room-scoreboard" className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
           <div className="text-[0.68rem] font-black uppercase tracking-[0.2em] text-slate-500 mb-3">Final Standings</div>
           <div className="grid gap-2">
             {sortedPlayers.map((p, index) => (
@@ -3285,7 +3455,7 @@ function GameApp() {
         <header className="game-top-hud flex items-start justify-between gap-3">
           <div className="game-timer-hud min-w-0">
             <div className="text-[0.68rem] font-black uppercase tracking-[0.3em] text-slate-500">
-              {mode === 'multiplayer' ? 'Control window' : 'Time left'}
+              {mode === 'multiplayer' ? (room?.phase === 'countdown' ? 'Starting in' : 'Race clock') : 'Time left'}
             </div>
             <div
               className={[
@@ -3329,14 +3499,28 @@ function GameApp() {
               <span
                 className={[
                   'rounded-full border px-3 py-1.5 text-[0.72rem] font-black uppercase tracking-[0.2em]',
-                  room.phase === 'open_claim'
+                  room.phase === 'waiting'
+                    ? 'border-slate-200 bg-white text-slate-700'
+                    : room.phase === 'countdown'
+                      ? 'border-amber-200 bg-amber-50 text-amber-800'
+                      : room.phase === 'racing'
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                  : room.phase === 'open_claim'
                     ? 'border-amber-200 bg-amber-50 text-amber-800'
                     : roomIsControlledBySelf
                       ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
                       : 'border-rose-200 bg-rose-50 text-rose-700',
                 ].join(' ')}
               >
-                {room.phase === 'open_claim' ? 'Open claim' : `${roomControllerName} controls`}
+                {room.phase === 'waiting'
+                  ? 'Lobby'
+                  : room.phase === 'countdown'
+                    ? '3-2-1'
+                    : room.phase === 'racing'
+                      ? 'Race live'
+                      : room.phase === 'open_claim'
+                        ? 'Open claim'
+                        : `${roomControllerName} controls`}
               </span>
             ) : null}
             {mode === 'journey' && session?.targetRoot ? (
@@ -3553,7 +3737,7 @@ function GameApp() {
               {mode === 'multiplayer' && room?.phase === 'countdown' ? (
                 <div className="absolute inset-0 z-40 bg-slate-900/60 flex flex-col items-center justify-center backdrop-blur-sm rounded-[1.8rem] pointer-events-auto">
                   <div className="text-[clamp(6rem,24vw,12rem)] font-black text-white leading-none tabular-nums drop-shadow-[0_12px_24px_rgba(0,0,0,0.4)] animate-pulse">
-                    {Math.max(1, Math.ceil(((room.config.countdownDurationMs ?? 3000) - (clockMs - (room.countdownStartedAtMs ?? clockMs)) + timeOffsetMs) / 1000))}
+                    {Math.max(1, Math.ceil(roomCountdownRemainingMs / 1000))}
                   </div>
                   <div className="text-sm font-bold uppercase tracking-[0.4em] text-white/80 mt-4 drop-shadow sm:text-xl">Get Ready</div>
                 </div>
@@ -3563,7 +3747,11 @@ function GameApp() {
                 <div
                   className={[
                     'absolute inset-x-[4%] top-[4%] z-30 flex justify-center md:inset-x-[8%]',
-                    setupNeedsLanguageChoice ? 'md:top-[14%]' : 'md:bottom-[22%] md:top-auto',
+                    setupNeedsLanguageChoice
+                      ? 'md:top-[14%]'
+                      : showRoomWaitingOverlay
+                        ? 'md:top-[8%]'
+                        : 'md:bottom-[22%] md:top-auto',
                   ].join(' ')}
                 >
                   <div
@@ -3577,6 +3765,8 @@ function GameApp() {
                         <div className="text-[0.68rem] font-black uppercase tracking-[0.32em] text-slate-500">
                           {setupNeedsLanguageChoice
                             ? 'Choose language'
+                            : showRoomWaitingOverlay
+                              ? 'Multiplayer lobby'
                             : showSummary
                               ? mode === 'multiplayer'
                                 ? 'Room over'
@@ -3586,6 +3776,8 @@ function GameApp() {
                         <h1 className="mt-2 font-['Suez_One'] text-2xl tracking-tight text-slate-950 md:text-3xl" dir="ltr">
                           {setupNeedsLanguageChoice
                             ? 'Choose Hebrew or Arabic'
+                            : showRoomWaitingOverlay
+                              ? `Room ${room?.code ?? ''}`
                             : showSummary
                             ? mode === 'multiplayer'
                               ? 'Room closed'
@@ -3597,10 +3789,12 @@ function GameApp() {
                         <p className="mt-1 max-w-xl text-sm leading-6 text-slate-600" dir="ltr">
                           {setupNeedsLanguageChoice
                             ? 'Pick one root world first. The game, keyboard hints, and examples will switch with it.'
+                            : showRoomWaitingOverlay
+                              ? 'Share the code, wait for players, then everyone hits Ready for the 3-2-1 start.'
                             : showSummary
                             ? formatReason(activeSession?.reason) || (mode === 'multiplayer' ? 'The room is over.' : 'The round is over.')
                             : mode === 'multiplayer'
-                              ? 'Share a room code. The first valid root claims control, and streaks stretch that control window.'
+                              ? 'Share a room code. Ready players launch a 3-2-1 race with a live scoreboard.'
                               : 'Use one-letter changes or swaps. Every result must be a valid root.'}
                         </p>
                       </div>
@@ -3608,7 +3802,7 @@ function GameApp() {
                       <div
                         className={[
                           'flex flex-col gap-4 mt-4',
-                          setupNeedsLanguageChoice ? 'hidden' : '',
+                          setupNeedsLanguageChoice || showRoomWaitingOverlay ? 'hidden' : '',
                         ].join(' ')}
                         dir="ltr"
                         aria-label="Run actions"
@@ -3656,7 +3850,7 @@ function GameApp() {
                       </div>
                     </div>
 
-                    {!setupNeedsLanguageChoice ? (
+                    {!setupNeedsLanguageChoice && !showRoomWaitingOverlay ? (
                       <div
                         id="how-to-play"
                         className="mt-4 rounded-[1rem] border border-emerald-200 bg-emerald-50/88 p-2 text-right shadow-[0_16px_38px_-30px_rgba(4,120,87,0.42)] sm:p-3"
@@ -3819,7 +4013,7 @@ function GameApp() {
                     </div>
                     ) : null}
 
-                    {!setupNeedsLanguageChoice ? (
+                    {!setupNeedsLanguageChoice && !showRoomWaitingOverlay ? (
                     <div id="example-move-panel" className="mt-3 rounded-[1.15rem] border border-emerald-200 bg-emerald-50/88 p-2 text-right shadow-[0_16px_38px_-30px_rgba(4,120,87,0.42)] sm:mt-4 sm:p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
@@ -3907,7 +4101,7 @@ function GameApp() {
                     </div>
                     ) : null}
 
-                    {!setupNeedsLanguageChoice ? (
+                    {!setupNeedsLanguageChoice && !showRoomWaitingOverlay ? (
                       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-[1rem] border border-slate-200 bg-white/74 px-3 py-2">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-[0.62rem] font-black uppercase tracking-[0.2em] text-slate-500" dir="ltr">
@@ -4081,10 +4275,10 @@ function GameApp() {
                       </div>
                     ) : null}
 
-                    {!setupNeedsLanguageChoice && !showSummary ? (
+                    {!setupNeedsLanguageChoice && !showSummary && !showRoomWaitingOverlay ? (
                       <p className="mt-3 text-sm leading-6 text-slate-600">
                         {mode === 'multiplayer'
-                          ? 'Each player has their own streak and score. Invalid roots reset only your streak. While one player controls the board, everyone else waits for the window to expire.'
+                          ? 'Ready up together. The race starts with a visible countdown, then the live scoreboard tracks every player.'
                           : 'Repeat roots are blocked. Quick hits pay bigger time refills.'}
                       </p>
                     ) : null}
@@ -4098,7 +4292,7 @@ function GameApp() {
                 <span className="rounded-full border border-white/80 bg-white/74 px-4 py-2 text-[0.72rem] font-black uppercase tracking-[0.24em] text-slate-700">
                   {sessionStateLabel}
                 </span>
-                {lastMove?.ok ? (
+                {lastMove?.ok && (lastMove.bonusMs ?? 0) > 0 ? (
                   <span className="rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-[0.72rem] font-black uppercase tracking-[0.22em] text-emerald-700">
                     {`+${formatSeconds(lastMove.bonusMs ?? 0)} · x${(lastMove.bonusMultiplier ?? 1).toFixed(2)}`}
                   </span>
@@ -4258,22 +4452,8 @@ function GameApp() {
               </p>
 
               {mode === 'multiplayer' && roomRoster.length > 0 ? (
-                <div className="flex flex-wrap items-center justify-center gap-2">
-                  {roomRoster.map((player) => (
-                    <span
-                      key={player.id}
-                      className={[
-                        'rounded-full border px-3 py-2 text-[0.68rem] font-black uppercase tracking-[0.16em]',
-                        player.isSelf
-                          ? 'border-slate-950 bg-slate-950 text-white'
-                          : room?.controllerPlayerId === player.id
-                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                            : 'border-white/80 bg-white/76 text-slate-700',
-                      ].join(' ')}
-                    >
-                      {player.name} · {player.score} · x{player.streak} · {player.takeovers} takeovers
-                    </span>
-                  ))}
+                <div className="w-full max-w-[38rem]">
+                  {renderRoomScoreboard('live')}
                 </div>
               ) : null}
             </div>

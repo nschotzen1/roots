@@ -491,6 +491,27 @@ export const checkRaceTimeout = (room, now = Date.now()) => {
   return true;
 };
 
+export const advanceRoomLifecycle = (room, now = Date.now()) => {
+  if (!room || room.status !== 'active') return false;
+
+  let changed = false;
+
+  if (room.phase === 'countdown') {
+    const countdownStartedAtMs = room.countdownStartedAtMs || now;
+    const raceStartAtMs = countdownStartedAtMs + room.config.countdownDurationMs;
+
+    if (now >= raceStartAtMs) {
+      changed = startRace(room, raceStartAtMs) || changed;
+    }
+  }
+
+  if (room.phase === 'racing') {
+    changed = checkRaceTimeout(room, now) || changed;
+  }
+
+  return changed;
+};
+
 export const getNeighborOptionsForRoom = (room, limit = 500) =>
   getNeighbors(room.currentRoot, {
     types: room.types,
