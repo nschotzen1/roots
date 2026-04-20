@@ -60,6 +60,7 @@ export default function LetterCard({
       onPointerCancel={onPointerCancel}
       disabled={disabled}
       data-slot-index={index}
+      aria-pressed={selected}
       className={[
         isEmbedded
           ? 'mosaic-slot-shell group relative h-full w-full select-none overflow-hidden rounded-[0.95rem] border-0 bg-transparent shadow-none transition duration-200 ease-out'
@@ -109,7 +110,7 @@ export default function LetterCard({
         <div className="mosaic-slot-focus-frame pointer-events-none absolute inset-[2.8%] z-[2] rounded-[1rem]" />
       ) : null}
       {isEmbedded && selected ? (
-        <div className="mosaic-slot-internal-hint pointer-events-none absolute inset-x-0 top-[4.5%] flex justify-center">
+        <div className="mosaic-slot-internal-hint pointer-events-none absolute inset-x-0 top-[4.5%] z-[5] flex justify-center">
           <div
             className={[
               'rounded-[1rem] px-4 py-2 text-center',
@@ -124,10 +125,10 @@ export default function LetterCard({
                 dragging ? 'text-emerald-800' : 'text-sky-800',
               ].join(' ')}
             >
-              {dragging ? 'Dragging' : 'Selected'}
+              {dragging ? 'Dragging Reel' : 'Selected Reel'}
             </div>
             <div className="mt-1 text-[0.58rem] font-black uppercase tracking-[0.18em] text-slate-900">
-              {dragging ? 'Release on reel' : 'Type or drag to swap'}
+              {slotLabel}
             </div>
           </div>
         </div>
