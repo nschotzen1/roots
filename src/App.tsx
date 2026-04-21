@@ -249,6 +249,15 @@ type AttemptFlash = {
   streakTierLabel: string | null;
 };
 
+type MultiplayerStreakBurst = {
+  playerId: string;
+  playerName: string;
+  streak: number;
+  validRoots: number;
+  isSelf: boolean;
+  message: string;
+};
+
 type MobileRewardFeedback = {
   tone: 'bonus' | 'combo' | 'blocked' | 'repeat';
   eyebrow: string;
@@ -329,6 +338,7 @@ const DEFAULT_MAX_CONTROL_MS = 12_000;
 const REEL_DRAG_THRESHOLD_PX = 12;
 const LANGUAGE_STORAGE_KEY = 'roots.languageMode.v1';
 const TRANSLITERATION_STORAGE_KEY = 'roots.transliterationPreset.v2';
+const PLAYER_NAME_STORAGE_KEY = 'roots.multiplayerPlayerName.v1';
 const STAGE_BACKGROUND_IMAGE = '/backgrounds/mosaic-overlay.png';
 const SLOT_LABELS = ['Right reel', 'Middle reel', 'Left reel'] as const;
 const HEBREW_CHAR_PATTERN = /[\u0590-\u05FF]/;
@@ -530,6 +540,27 @@ const formatElapsed = (ms: number) => {
   return formatSeconds(ms);
 };
 
+const createDefaultPlayerName = () => `Player ${Math.floor(100 + Math.random() * 900)}`;
+
+const readInitialPlayerName = () => {
+  if (typeof window === 'undefined') return createDefaultPlayerName();
+
+  const savedName = window.localStorage.getItem(PLAYER_NAME_STORAGE_KEY)?.trim();
+  return savedName || createDefaultPlayerName();
+};
+
+const CopyIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <rect x="9" y="9" width="10" height="10" rx="2" stroke="currentColor" strokeWidth="2" />
+    <path
+      d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeWidth="2"
+    />
+  </svg>
+);
+
 const getMobileRewardFeedback = (
   bonusFlash: BonusFlash | null,
   bonusFlashVisible: boolean,
@@ -600,6 +631,59 @@ const getStreakDescriptor = (streak: number) => {
   return {
     label: tier.label,
     detail: `${tier.label} x${streak}`,
+  };
+};
+
+const SELF_STREAK_TEASES = [
+  'Make them chase it.',
+  'The room felt that one.',
+  'Polite pressure, applied.',
+  'Someone has to set the pace.',
+];
+
+const RIVAL_STREAK_TEASES = [
+  'The rest of the room has homework.',
+  'Tiny pressure for everyone else.',
+  'Somebody cool this run down.',
+  'The scoreboard is getting personal.',
+];
+
+const getMultiplayerStreakMessage = (playerName: string, streak: number, isSelf: boolean) => {
+  const options = isSelf ? SELF_STREAK_TEASES : RIVAL_STREAK_TEASES;
+  const seed = playerName.length + streak;
+  return options[seed % options.length] ?? options[0];
+};
+
+const findRoomStreakBurst = (
+  previousRoom: RoomSnapshot | null,
+  nextRoom: RoomSnapshot,
+  selfPlayerId: string | null | undefined,
+): MultiplayerStreakBurst | null => {
+  if (!previousRoom || nextRoom.phase === 'waiting') return null;
+
+  const previousPlayers = new Map(previousRoom.players.map((player) => [player.id, player]));
+  let bestPlayer: RoomPlayerSnapshot | null = null;
+
+  for (const player of nextRoom.players) {
+    const previousPlayer = previousPlayers.get(player.id);
+    if (!previousPlayer) continue;
+    if (player.validRoots <= previousPlayer.validRoots) continue;
+    if (player.streak < 2 || player.streak <= previousPlayer.streak) continue;
+    if (!bestPlayer || player.streak > bestPlayer.streak) {
+      bestPlayer = player;
+    }
+  }
+
+  if (!bestPlayer) return null;
+
+  const isSelf = bestPlayer.id === selfPlayerId || bestPlayer.isSelf;
+  return {
+    playerId: bestPlayer.id,
+    playerName: bestPlayer.name,
+    streak: bestPlayer.streak,
+    validRoots: bestPlayer.validRoots,
+    isSelf,
+    message: getMultiplayerStreakMessage(bestPlayer.name, bestPlayer.streak, isSelf),
   };
 };
 
@@ -847,7 +931,7 @@ const getBonusWindowMs = (session: SessionSnapshot | null, fallback = DEFAULT_BO
   session?.config?.bonusWindowMs ?? fallback;
 
 function GameApp() {
-  const [mode, setMode] = useState<PlayMode>('survival');
+  const [mode, setMode] = useState<PlayMode>('multiplayer');
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const [room, setRoom] = useState<RoomSnapshot | null>(null);
   const [roomPlayer, setRoomPlayer] = useState<RoomPlayerAuth | null>(null);
@@ -865,7 +949,7 @@ function GameApp() {
   const [startRootInput, setStartRootInput] = useState('');
   const [targetRootInput, setTargetRootInput] = useState('');
   const [roomCodeInput, setRoomCodeInput] = useState('');
-  const [roomPlayerNameInput, setRoomPlayerNameInput] = useState('');
+  const [roomPlayerNameInput, setRoomPlayerNameInput] = useState(readInitialPlayerName);
   const [countdownMs, setCountdownMs] = useState(DEFAULT_COUNTDOWN_MS);
   const [bonusBaseMs, setBonusBaseMs] = useState(DEFAULT_BONUS_BASE_MS);
   const [bonusWindowMs, setBonusWindowMs] = useState(DEFAULT_BONUS_WINDOW_MS);
@@ -890,6 +974,10 @@ function GameApp() {
   const [bonusFlashVisible, setBonusFlashVisible] = useState(false);
   const [attemptFlash, setAttemptFlash] = useState<AttemptFlash | null>(null);
   const [attemptFlashVisible, setAttemptFlashVisible] = useState(false);
+  const [multiplayerStreakBurst, setMultiplayerStreakBurst] =
+    useState<MultiplayerStreakBurst | null>(null);
+  const [multiplayerStreakBurstVisible, setMultiplayerStreakBurstVisible] = useState(false);
+  const [copiedRoomCode, setCopiedRoomCode] = useState<string | null>(null);
   const [visitedRoots, setVisitedRoots] = useState<string[]>([]);
   const [reelFx, setReelFx] = useState<'spin' | 'shake' | null>(null);
   const [timerBurstActive, setTimerBurstActive] = useState(false);
@@ -917,6 +1005,7 @@ function GameApp() {
 
   const sessionIdRef = useRef<string | null>(null);
   const roomCodeRef = useRef<string | null>(null);
+  const roomSnapshotRef = useRef<RoomSnapshot | null>(null);
   const typingInputRef = useRef<HTMLInputElement | null>(null);
   const suggestRootInputRef = useRef<HTMLInputElement | null>(null);
   const dragGestureRef = useRef<DragGestureState | null>(null);
@@ -924,6 +1013,8 @@ function GameApp() {
   const flashTimersRef = useRef<number[]>([]);
   const attemptTimersRef = useRef<number[]>([]);
   const motionTimersRef = useRef<number[]>([]);
+  const multiplayerStreakTimerRef = useRef<number[]>([]);
+  const copyRoomCodeTimerRef = useRef<number | null>(null);
 
   const activeRoomPlayer = useMemo(
     () =>
@@ -1318,6 +1409,11 @@ function GameApp() {
     motionTimersRef.current = [];
   }, []);
 
+  const clearMultiplayerStreakTimers = useCallback(() => {
+    multiplayerStreakTimerRef.current.forEach((timerId) => window.clearTimeout(timerId));
+    multiplayerStreakTimerRef.current = [];
+  }, []);
+
   const showBonusFlash = useCallback((payload: BonusFlash) => {
     clearFlashTimers();
     setBonusFlash(payload);
@@ -1337,6 +1433,66 @@ function GameApp() {
     const clearTimer = window.setTimeout(() => setAttemptFlash(null), 2100);
     attemptTimersRef.current = [collapseTimer, clearTimer];
   }, [clearAttemptTimers]);
+
+  const showMultiplayerStreakBurst = useCallback((payload: MultiplayerStreakBurst) => {
+    clearMultiplayerStreakTimers();
+    setMultiplayerStreakBurst(payload);
+    setMultiplayerStreakBurstVisible(true);
+
+    const collapseTimer = window.setTimeout(() => setMultiplayerStreakBurstVisible(false), 1900);
+    const clearTimer = window.setTimeout(() => setMultiplayerStreakBurst(null), 2700);
+    multiplayerStreakTimerRef.current = [collapseTimer, clearTimer];
+  }, [clearMultiplayerStreakTimers]);
+
+  const copyRoomCode = useCallback(async (roomCode: string) => {
+    const normalizedRoomCode = roomCode.trim().toUpperCase();
+    if (!normalizedRoomCode) return;
+
+    try {
+      let copied = false;
+
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(normalizedRoomCode);
+          copied = true;
+        } catch {
+          copied = false;
+        }
+      }
+
+      if (!copied) {
+        const textarea = document.createElement('textarea');
+        textarea.value = normalizedRoomCode;
+        textarea.setAttribute('readonly', 'true');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        textarea.style.top = '0';
+        document.body.appendChild(textarea);
+        try {
+          textarea.focus();
+          textarea.select();
+          copied = document.execCommand('copy');
+        } finally {
+          document.body.removeChild(textarea);
+        }
+      }
+
+      if (!copied) {
+        throw new Error('copy_failed');
+      }
+
+      setCopiedRoomCode(normalizedRoomCode);
+      if (copyRoomCodeTimerRef.current) {
+        window.clearTimeout(copyRoomCodeTimerRef.current);
+      }
+      copyRoomCodeTimerRef.current = window.setTimeout(() => {
+        setCopiedRoomCode(null);
+        copyRoomCodeTimerRef.current = null;
+      }, 1500);
+    } catch {
+      setErrorText('Could not copy room code');
+    }
+  }, []);
 
   const triggerValidMotion = useCallback(() => {
     clearMotionTimers();
@@ -1394,6 +1550,14 @@ function GameApp() {
       preserveSelection?: boolean;
     },
   ) => {
+    const previousRoom = roomSnapshotRef.current;
+    const streakBurst = findRoomStreakBurst(previousRoom, payload.room, roomPlayer?.id ?? payload.player?.id);
+
+    if (streakBurst) {
+      showMultiplayerStreakBurst(streakBurst);
+    }
+
+    roomSnapshotRef.current = payload.room;
     setRoom(payload.room);
     setLanguageMode(payload.room.language);
     setRoomPlayer(payload.player);
@@ -1416,7 +1580,7 @@ function GameApp() {
     if (payload.room.status !== 'active') {
       clearSelection();
     }
-  }, [clearSelection]);
+  }, [clearSelection, roomPlayer?.id, showMultiplayerStreakBurst]);
 
   const resetGameplayUi = useCallback(() => {
     resetApiTime();
@@ -1427,6 +1591,8 @@ function GameApp() {
     setBonusFlashVisible(false);
     setAttemptFlash(null);
     setAttemptFlashVisible(false);
+    setMultiplayerStreakBurst(null);
+    setMultiplayerStreakBurstVisible(false);
     setReelFx(null);
     setTimerBurstActive(false);
     setJourneySolution(null);
@@ -1435,11 +1601,13 @@ function GameApp() {
     clearFlashTimers();
     clearAttemptTimers();
     clearMotionTimers();
+    clearMultiplayerStreakTimers();
     setTimeOffsetMs(0);
     clearSelection();
   }, [
     clearAttemptTimers,
     clearFlashTimers,
+    clearMultiplayerStreakTimers,
     clearMotionTimers,
     clearSelection,
   ]);
@@ -1453,6 +1621,7 @@ function GameApp() {
       sessionIdRef.current = null;
       setRoom(null);
       roomCodeRef.current = null;
+      roomSnapshotRef.current = null;
       setRoomPlayer(null);
       setNeighborsSet(new Set());
       setNeighborEdges([]);
@@ -1583,6 +1752,7 @@ function GameApp() {
     setRoom(null);
     setRoomPlayer(null);
     roomCodeRef.current = null;
+    roomSnapshotRef.current = null;
 
     const body: Record<string, unknown> = {
       language: activeLanguageMode,
@@ -2460,7 +2630,11 @@ function GameApp() {
     clearFlashTimers();
     clearAttemptTimers();
     clearMotionTimers();
-  }, [clearAttemptTimers, clearFlashTimers, clearMotionTimers]);
+    clearMultiplayerStreakTimers();
+    if (copyRoomCodeTimerRef.current) {
+      window.clearTimeout(copyRoomCodeTimerRef.current);
+    }
+  }, [clearAttemptTimers, clearFlashTimers, clearMotionTimers, clearMultiplayerStreakTimers]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -2487,6 +2661,14 @@ function GameApp() {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(TRANSLITERATION_STORAGE_KEY, transliterationPresetId);
   }, [transliterationPresetId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const trimmedName = roomPlayerNameInput.trim();
+    if (trimmedName) {
+      window.localStorage.setItem(PLAYER_NAME_STORAGE_KEY, trimmedName);
+    }
+  }, [roomPlayerNameInput]);
 
   useEffect(() => {
     void refreshKeyboardLayout();
@@ -2766,6 +2948,16 @@ function GameApp() {
         bonusFlash: activeBonus,
         attemptFlash: activeAttempt,
         mobileFeedback: activeMobileFeedback,
+        multiplayerStreakBurst: multiplayerStreakBurst
+          ? {
+              playerName: multiplayerStreakBurst.playerName,
+              streak: multiplayerStreakBurst.streak,
+              validRoots: multiplayerStreakBurst.validRoots,
+              isSelf: multiplayerStreakBurst.isSelf,
+              message: multiplayerStreakBurst.message,
+              visible: multiplayerStreakBurstVisible && !compactTouchFeedback,
+            }
+          : null,
         streakPulse: compactTouchFeedback ? null : activeStreakPulse,
         motion: activeMotion,
         journeySolution: journeySolutionRequest
@@ -2794,6 +2986,7 @@ function GameApp() {
             expected: activeLanguageMode,
           },
           keyboardSwitchHint: keyboardSwitchGuide.hint,
+          copiedRoomCode,
           prefersTouchInput,
           touchFeedbackMode: compactTouchFeedback ? 'compact' : 'full',
           touchFeedbackSuppressed: false,
@@ -2823,10 +3016,13 @@ function GameApp() {
     canInteractWithBoard,
     candidatePlain,
     committedPlain,
+    copiedRoomCode,
     errorText,
     infoText,
     loadingSession,
     mode,
+    multiplayerStreakBurst,
+    multiplayerStreakBurstVisible,
     neighborsSet,
     room,
     roomCountdownRemainingMs,
@@ -2991,6 +3187,28 @@ function GameApp() {
           },
         ];
 
+  const renderRoomCodeCopyButton = (roomCode: string, label = 'Copy room code') => {
+    const normalizedRoomCode = roomCode.trim().toUpperCase();
+    const copied = copiedRoomCode === normalizedRoomCode;
+
+    return (
+      <button
+        type="button"
+        aria-label={label}
+        title={copied ? 'Copied' : label}
+        onClick={() => void copyRoomCode(normalizedRoomCode)}
+        className={[
+          'inline-flex h-8 w-8 items-center justify-center rounded-[0.5rem] border transition',
+          copied
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+            : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50',
+        ].join(' ')}
+      >
+        <CopyIcon />
+      </button>
+    );
+  };
+
   const renderModeChoice = () => {
     const cards: Array<{
       id: PlayMode;
@@ -3000,6 +3218,14 @@ function GameApp() {
       activeClass: string;
       accentClass: string;
     }> = [
+      {
+        id: 'multiplayer',
+        eyebrow: 'Race',
+        title: 'Multiplayer',
+        detail: 'Pick a name, join an open room, or create one if the lobby is empty.',
+        activeClass: 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-200',
+        accentClass: 'text-emerald-700',
+      },
       {
         id: 'survival',
         eyebrow: 'Solo',
@@ -3015,14 +3241,6 @@ function GameApp() {
         detail: 'Reach a target root by finding a valid path through the graph.',
         activeClass: 'border-amber-500 bg-amber-50 ring-2 ring-amber-200',
         accentClass: 'text-amber-700',
-      },
-      {
-        id: 'multiplayer',
-        eyebrow: 'Race',
-        title: 'Multiplayer',
-        detail: 'Join the same room, ready up, then race for the highest score.',
-        activeClass: 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-200',
-        accentClass: 'text-emerald-700',
       },
     ];
 
@@ -3236,8 +3454,9 @@ function GameApp() {
             <div className="text-[0.66rem] font-black uppercase tracking-[0.24em] text-slate-500">
               {variant === 'final' ? 'Final scoreboard' : 'Scoreboard'}
             </div>
-            <div className="mt-1 text-lg font-black text-slate-950">
-              Room {room.code}
+            <div className="mt-1 flex items-center gap-2 text-lg font-black text-slate-950">
+              <span>Room {room.code}</span>
+              {renderRoomCodeCopyButton(room.code, `Copy room ${room.code}`)}
             </div>
           </div>
           <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.18em] text-slate-600">
@@ -3300,117 +3519,161 @@ function GameApp() {
     );
   };
 
-  const renderLobbyBrowser = () => (
-    <section className="mt-4 flex flex-col gap-4 rounded-[0.5rem] border border-slate-200 bg-white/82 p-4 shadow-[0_18px_42px_-34px_rgba(15,23,42,0.46)]" dir="ltr">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <div className="text-[0.68rem] font-black uppercase tracking-[0.24em] text-slate-500">
-            Multiplayer room
-          </div>
-          <div className="mt-1 text-sm font-bold text-slate-950">
-            Choose a name, then join an open room or create one.
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[0.66rem] font-black uppercase tracking-[0.18em] text-slate-500">
-            Step 4
-          </span>
-          <button
-            id="create-room-btn"
-            type="button"
-            onClick={createRoom}
-            disabled={loadingRoom}
-            className="rounded-[0.5rem] bg-slate-950 px-5 py-3 text-sm font-black text-white shadow-[0_16px_44px_-24px_rgba(15,23,42,0.88)] transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
-          >
-            {loadingRoom ? 'Working...' : 'Create room'}
-          </button>
-        </div>
-      </div>
+  const renderLobbyBrowser = () => {
+    const visibleRooms =
+      roomList?.filter((candidate) => !candidate.language || candidate.language === activeLanguageMode) ?? [];
+    const hiddenLanguageRooms = Math.max(0, (roomList?.length ?? 0) - visibleRooms.length);
 
-      <div className="grid gap-3 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-        <label className="rounded-[0.5rem] border border-slate-200 bg-slate-50 px-4 py-3">
-          <div className="text-[0.68rem] font-black uppercase tracking-[0.2em] text-slate-500">
-            Player name
-          </div>
-          <input
-            value={roomPlayerNameInput}
-            onChange={(event) => setRoomPlayerNameInput(event.target.value)}
-            placeholder="Player name"
-            className="mt-2 w-full rounded-[0.5rem] border border-slate-200 bg-white px-4 py-3 font-mono text-base font-black text-slate-950 outline-none transition focus:border-sky-400"
-          />
-        </label>
-        <label className="rounded-[0.5rem] border border-slate-200 bg-slate-50 px-4 py-3">
-          <div className="text-[0.68rem] font-black uppercase tracking-[0.2em] text-slate-500">
-            Join with code
-          </div>
-          <div className="mt-2 flex gap-2">
+    return (
+      <section className="mt-4 flex flex-col gap-4 rounded-[0.5rem] border border-slate-200 bg-white/86 p-4 shadow-[0_18px_42px_-34px_rgba(15,23,42,0.46)]" dir="ltr">
+        <div className="grid gap-3 md:grid-cols-[minmax(0,0.95fr)_minmax(0,1.45fr)]">
+          <label className="rounded-[0.5rem] border border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-[0.68rem] font-black uppercase tracking-[0.2em] text-slate-500">
+                Player name
+              </div>
+              <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[0.62rem] font-black uppercase tracking-[0.16em] text-slate-500">
+                First
+              </span>
+            </div>
             <input
-              value={roomCodeInput}
-              onChange={(event) => setRoomCodeInput(event.target.value.toUpperCase())}
-              placeholder="Code"
-              className="w-full rounded-[0.5rem] border border-slate-200 bg-white px-4 py-3 font-mono text-base font-black uppercase text-slate-950 outline-none transition focus:border-sky-400"
+              id="player-name-input"
+              value={roomPlayerNameInput}
+              onChange={(event) => setRoomPlayerNameInput(event.target.value)}
+              placeholder="Player name"
+              className="mt-2 w-full rounded-[0.5rem] border border-slate-200 bg-white px-4 py-3 font-mono text-base font-black text-slate-950 outline-none transition focus:border-sky-400"
             />
-            <button
-              id="join-room-btn"
-              type="button"
-              onClick={joinRoom}
-              disabled={loadingRoom || !roomCodeInput}
-              className="rounded-[0.5rem] bg-sky-100 px-5 py-3 font-black text-sky-800 transition hover:bg-sky-200 disabled:opacity-50"
-            >
-              Join
-            </button>
-          </div>
-        </label>
-      </div>
+          </label>
 
-      <div className="rounded-[0.5rem] border border-slate-200 bg-slate-50 p-4 shadow-sm">
-        <div className="flex items-center justify-between mb-4">
-          <div className="font-black text-slate-800 text-lg">Available rooms</div>
-          <button 
-            type="button"
-            onClick={loadRoomList}
-            disabled={loadingRoomList}
-            className="rounded-[0.5rem] bg-white px-3 py-1.5 text-xs font-bold text-slate-600 transition hover:bg-slate-100 disabled:opacity-50"
-          >
-            Refresh
-          </button>
-        </div>
-        
-        {loadingRoomList ? (
-          <div className="text-center py-6 text-sm font-bold text-slate-500">Loading rooms...</div>
-        ) : roomList && roomList.length > 0 ? (
-          <div className="grid gap-2 max-h-48 overflow-y-auto">
-            {roomList.map(r => (
-              <div key={r.code} className="flex justify-between items-center rounded-[0.5rem] bg-white border border-slate-200 px-3 py-2">
-                <div>
-                  <div className="font-mono text-sm font-black text-slate-900">{r.code}</div>
-                  <div className="text-xs font-semibold text-slate-500">Host: {r.hostName}</div>
+          <div className="rounded-[0.5rem] border border-emerald-200 bg-emerald-50/70 px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-[0.68rem] font-black uppercase tracking-[0.2em] text-emerald-700">
+                  Available rooms
                 </div>
-                <div className="flex items-center gap-3">
-                  <div className="text-xs font-bold text-slate-700">
-                    {r.playerCount} / {r.maxPlayers}
+                <div className="mt-1 text-sm font-bold text-slate-800">
+                  Join one tap, or create a new room below.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={loadRoomList}
+                disabled={loadingRoomList}
+                className="rounded-[0.5rem] border border-emerald-200 bg-white px-3 py-1.5 text-xs font-black text-emerald-700 transition hover:bg-emerald-50 disabled:opacity-50"
+              >
+                {loadingRoomList ? 'Refreshing...' : 'Refresh'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-[0.5rem] border border-slate-200 bg-slate-50 p-4 shadow-sm">
+          {loadingRoomList ? (
+            <div className="py-8 text-center text-sm font-black text-slate-500">
+              Finding open rooms...
+            </div>
+          ) : visibleRooms.length > 0 ? (
+            <div className="grid max-h-64 gap-2 overflow-y-auto">
+              {visibleRooms.map((candidate) => (
+                <div
+                  key={candidate.code}
+                  className="grid gap-3 rounded-[0.5rem] border border-slate-200 bg-white px-3 py-3 shadow-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                >
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-lg font-black uppercase leading-none text-slate-950">
+                        {candidate.code}
+                      </span>
+                      {renderRoomCodeCopyButton(candidate.code, `Copy room ${candidate.code}`)}
+                      {copiedRoomCode === candidate.code ? (
+                        <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[0.62rem] font-black uppercase tracking-[0.16em] text-emerald-700">
+                          Copied
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-slate-500">
+                      <span>Host {candidate.hostName}</span>
+                      <span>{candidate.playerCount}/{candidate.maxPlayers} players</span>
+                      <span>{formatSeconds(candidate.gameDurationMs)} race</span>
+                      <span>{LANGUAGE_LABELS[candidate.language ?? activeLanguageMode]}</span>
+                    </div>
                   </div>
+
                   <button
                     type="button"
                     onClick={() => {
-                       setRoomCodeInput(r.code);
-                       void joinRoomWithCode(r.code);
+                      setRoomCodeInput(candidate.code);
+                      void joinRoomWithCode(candidate.code);
                     }}
-                    className="rounded-[0.5rem] bg-slate-900 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-slate-800"
+                    disabled={loadingRoom}
+                    className="rounded-[0.5rem] bg-slate-950 px-5 py-3 text-sm font-black text-white shadow-[0_16px_44px_-24px_rgba(15,23,42,0.88)] transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
                   >
-                    Join
+                    Join room
                   </button>
                 </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-[0.5rem] border border-dashed border-slate-300 bg-white px-4 py-7 text-center">
+              <div className="text-lg font-black text-slate-900">No open {LANGUAGE_LABELS[activeLanguageMode]} rooms</div>
+              <div className="mt-1 text-sm font-bold text-slate-500">
+                {hiddenLanguageRooms > 0
+                  ? `${hiddenLanguageRooms} room${hiddenLanguageRooms === 1 ? '' : 's'} are waiting in another language.`
+                  : 'Create one and your friends can jump in from the list.'}
               </div>
-            ))}
-          </div>
-        ) : (
-          <div className="text-center py-6 text-sm font-bold text-slate-500">No active rooms found. Create one to play!</div>
-        )}
-      </div>
+            </div>
+          )}
+        </div>
 
-    </section>
-  );
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+          <label className="rounded-[0.5rem] border border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="text-[0.68rem] font-black uppercase tracking-[0.2em] text-slate-500">
+              Have a code?
+            </div>
+            <div className="mt-2 flex gap-2">
+              <input
+                value={roomCodeInput}
+                onChange={(event) => setRoomCodeInput(event.target.value.toUpperCase())}
+                placeholder="Room code"
+                className="w-full rounded-[0.5rem] border border-slate-200 bg-white px-4 py-3 font-mono text-base font-black uppercase text-slate-950 outline-none transition focus:border-sky-400"
+              />
+              <button
+                id="join-room-btn"
+                type="button"
+                onClick={joinRoom}
+                disabled={loadingRoom || !roomCodeInput}
+                className="rounded-[0.5rem] bg-sky-100 px-5 py-3 font-black text-sky-800 transition hover:bg-sky-200 disabled:opacity-50"
+              >
+                Join
+              </button>
+            </div>
+          </label>
+
+          <div className="flex flex-wrap gap-2 md:justify-end">
+            <button
+              id="advanced-settings-toggle"
+              type="button"
+              aria-expanded={showAdvancedSetup}
+              aria-controls="advanced-settings-panel"
+              onClick={() => setShowAdvancedSetup((prev) => !prev)}
+              className="rounded-[0.5rem] border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 transition hover:bg-slate-50"
+            >
+              {showAdvancedSetup ? 'Hide settings' : 'Room settings'}
+            </button>
+            <button
+              id="create-room-btn"
+              type="button"
+              onClick={createRoom}
+              disabled={loadingRoom}
+              className="rounded-[0.5rem] bg-emerald-600 px-6 py-4 text-sm font-black text-white shadow-[0_18px_46px_-24px_rgba(5,150,105,0.72)] transition hover:-translate-y-0.5 hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {loadingRoom ? 'Creating...' : 'Create new room'}
+            </button>
+          </div>
+        </div>
+      </section>
+    );
+  };
 
   const renderWaitingRoom = () => {
     if (!room) return null;
@@ -3422,7 +3685,18 @@ function GameApp() {
         <div className="flex justify-between items-start mb-2">
           <div>
             <div className="text-2xl font-black text-slate-900">Waiting Room</div>
-            <div className="mt-1 text-sm font-bold text-slate-500">Share code: <span className="font-mono bg-slate-100 px-2 py-0.5 rounded ml-1 text-slate-900 border border-slate-200">{room.code}</span></div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-sm font-bold text-slate-500">
+              <span>Share code</span>
+              <span className="font-mono bg-slate-100 px-2 py-1 rounded text-slate-900 border border-slate-200">
+                {room.code}
+              </span>
+              {renderRoomCodeCopyButton(room.code, `Copy room ${room.code}`)}
+              {copiedRoomCode === room.code ? (
+                <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[0.62rem] font-black uppercase tracking-[0.16em] text-emerald-700">
+                  Copied
+                </span>
+              ) : null}
+            </div>
           </div>
           <button
             type="button"
@@ -3430,6 +3704,7 @@ function GameApp() {
               setRoom(null);
               setRoomPlayer(null);
               roomCodeRef.current = null;
+              roomSnapshotRef.current = null;
             }}
             className="text-xs font-bold text-slate-400 hover:text-slate-600 underline"
           >
@@ -3519,7 +3794,12 @@ function GameApp() {
 
         <div className="flex justify-center mt-2">
           <button
-            onClick={() => setRoom(null)}
+            onClick={() => {
+              setRoom(null);
+              setRoomPlayer(null);
+              roomCodeRef.current = null;
+              roomSnapshotRef.current = null;
+            }}
             className="rounded-[1.2rem] bg-slate-900 px-6 py-4 text-base font-black text-white hover:bg-slate-800 transition"
           >
             Back to Lobby
@@ -3551,6 +3831,30 @@ function GameApp() {
           streakAfterMove={bonusFlash?.streakAfterMove ?? 0}
           visible={visibleBonusFlash}
         />
+      ) : null}
+
+      {mode === 'multiplayer' && multiplayerStreakBurst && !compactTouchFeedback ? (
+        <div
+          id="multiplayer-streak-burst"
+          className={[
+            'multiplayer-streak-burst',
+            multiplayerStreakBurstVisible ? 'multiplayer-streak-burst--visible' : '',
+          ].join(' ')}
+          aria-live="polite"
+          dir="ltr"
+        >
+          <div className="multiplayer-streak-burst__card">
+            <span className="multiplayer-streak-burst__eyebrow">
+              {multiplayerStreakBurst.isSelf ? 'Your streak' : 'Hot streak'}
+            </span>
+            <strong className="multiplayer-streak-burst__headline">
+              {multiplayerStreakBurst.playerName}: {multiplayerStreakBurst.streak} roots in a row
+            </strong>
+            <span className="multiplayer-streak-burst__tease">
+              {multiplayerStreakBurst.message}
+            </span>
+          </div>
+        </div>
       ) : null}
 
       {!compactTouchFeedback ? (
@@ -4082,30 +4386,34 @@ function GameApp() {
                     {!setupNeedsLanguageChoice && !showSummary && !activeSession && !room ? (
                       <>
                         {renderModeChoice()}
-                        {renderModeInstructions()}
-                        {mode !== 'multiplayer' ? (
-                          <div className="mt-4 flex flex-wrap items-center justify-end gap-2" dir="ltr">
-                            <button
-                              id="advanced-settings-toggle"
-                              type="button"
-                              aria-expanded={showAdvancedSetup}
-                              aria-controls="advanced-settings-panel"
-                              onClick={() => setShowAdvancedSetup((prev) => !prev)}
-                              className="rounded-[0.5rem] border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-700 transition hover:bg-slate-50"
-                            >
-                              {showAdvancedSetup ? 'Hide settings' : 'Run settings'}
-                            </button>
-                            <button
-                              id="start-btn"
-                              type="button"
-                              onClick={startSession}
-                              disabled={loadingSession}
-                              className="rounded-[0.5rem] bg-slate-950 px-6 py-3 text-sm font-black text-white shadow-[0_16px_44px_-24px_rgba(15,23,42,0.88)] transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
-                            >
-                              {loadingSession ? 'Starting...' : session ? 'Play again' : 'Start run'}
-                            </button>
-                          </div>
-                        ) : null}
+                        {mode === 'multiplayer' ? (
+                          renderLobbyBrowser()
+                        ) : (
+                          <>
+                            {renderModeInstructions()}
+                            <div className="mt-4 flex flex-wrap items-center justify-end gap-2" dir="ltr">
+                              <button
+                                id="advanced-settings-toggle"
+                                type="button"
+                                aria-expanded={showAdvancedSetup}
+                                aria-controls="advanced-settings-panel"
+                                onClick={() => setShowAdvancedSetup((prev) => !prev)}
+                                className="rounded-[0.5rem] border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-700 transition hover:bg-slate-50"
+                              >
+                                {showAdvancedSetup ? 'Hide settings' : 'Run settings'}
+                              </button>
+                              <button
+                                id="start-btn"
+                                type="button"
+                                onClick={startSession}
+                                disabled={loadingSession}
+                                className="rounded-[0.5rem] bg-slate-950 px-6 py-3 text-sm font-black text-white shadow-[0_16px_44px_-24px_rgba(15,23,42,0.88)] transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+                              >
+                                {loadingSession ? 'Starting...' : session ? 'Play again' : 'Start run'}
+                              </button>
+                            </div>
+                          </>
+                        )}
                       </>
                     ) : null}
 
@@ -4340,9 +4648,7 @@ function GameApp() {
                           ) : room.phase === 'completed' ? (
                             renderCompletedRoom()
                           ) : null
-                        ) : (
-                          renderLobbyBrowser()
-                        )
+                        ) : null
                       ) : null
                     ) : null}
 

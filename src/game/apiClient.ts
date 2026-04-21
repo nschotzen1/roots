@@ -189,6 +189,7 @@ type RoomSnapshot = {
 
 export type RoomListEntry = {
   code: string;
+  language: LanguageMode;
   playerCount: number;
   maxPlayers: number;
   gameDurationMs: number;
@@ -2687,6 +2688,7 @@ const handleRoomList = async () => {
       .filter((room) => room.status === 'active' && room.phase === 'waiting')
       .map((room) => ({
         code: room.code,
+        language: room.language,
         playerCount: room.players.length,
         maxPlayers: room.config.maxPlayers,
         gameDurationMs: room.config.gameDurationMs,

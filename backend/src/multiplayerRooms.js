@@ -601,6 +601,7 @@ export const listWaitingRooms = async () => {
       .filter((room) => room.phase === 'waiting' && room.status === 'active')
       .map((room) => ({
         code: room.code,
+        language: room.language,
         playerCount: room.players.length,
         maxPlayers: room.config.maxPlayers,
         gameDurationMs: room.config.gameDurationMs,
@@ -621,6 +622,7 @@ export const listWaitingRooms = async () => {
     if (!room || room.phase !== 'waiting' || room.status !== 'active') continue;
     rooms.push({
       code: room.code,
+      language: room.language,
       playerCount: room.players.length,
       maxPlayers: room.config.maxPlayers,
       gameDurationMs: room.config.gameDurationMs,
