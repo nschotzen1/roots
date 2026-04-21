@@ -16,6 +16,7 @@ const DEFAULT_ROOM_LOCK_WAIT_MS = 2_000;
 const DEFAULT_GAME_DURATION_MS = 90_000;
 const DEFAULT_COUNTDOWN_DURATION_MS = 4_000;
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const ROOM_LANGUAGE = 'hebrew';
 
 const ROOM_PHASES = ['waiting', 'countdown', 'racing', 'completed'];
 
@@ -173,6 +174,7 @@ const deserializeStoredRoom = (value) => {
   return {
     id: typeof value.id === 'string' && value.id ? value.id : createOpaqueId('room'),
     code,
+    language: ROOM_LANGUAGE,
     version: Math.max(1, Math.floor(Number(value.version) || 1)),
     status: value.status === 'completed' ? 'completed' : 'active',
     phase: normalizePhase(value.phase),
@@ -312,6 +314,8 @@ export const countRooms = async () => {
   return await getRedisClient().scard(roomIndexKey);
 };
 
+export const getRoomsBackend = () => roomsBackend;
+
 export const getRoom = async (roomCode) => {
   const normalizedCode = normalizeRoomCode(roomCode);
   if (!normalizedCode) return null;
@@ -359,6 +363,7 @@ export const createRoom = async ({
   const room = {
     id: createOpaqueId('room'),
     code: await generateUniqueRoomCode(),
+    language: ROOM_LANGUAGE,
     version: 1,
     status: 'active',
     phase: 'waiting',
@@ -653,6 +658,7 @@ export const serializeRoomPayload = async (
     room: {
       id: room.id,
       code: room.code,
+      language: room.language || ROOM_LANGUAGE,
       version: room.version,
       status: room.status,
       phase: room.phase,

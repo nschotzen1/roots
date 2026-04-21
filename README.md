@@ -1,6 +1,6 @@
 # Root Game (Hebrew Roots)
 
-A Vite frontend for the Hebrew roots game with an optional bundled backend. By default the deployed app still runs fully in browser memory; the Vercel API can be enabled separately once the backend persistence work is finished.
+A Vite frontend for the Hebrew roots game with a bundled Vercel API. Single-player can still run in browser memory, but production multiplayer room endpoints use the shared `/api/*` backend by default so players on different devices can join the same room.
 
 ## What It Includes
 
@@ -52,8 +52,15 @@ This repo now ships as a Vite site plus bundled Vercel functions under `/api/*`.
 
 1. Push it to GitHub, GitLab, or Bitbucket.
 2. Import it into Vercel.
-3. Leave `VITE_API_BASE_URL` unset for the current safe default.
-4. If you want the frontend to call the bundled API later, set `VITE_API_BASE_URL=/`.
+3. Configure shared multiplayer room storage:
+
+```bash
+ROOMS_BACKEND=redis
+UPSTASH_REDIS_REST_URL=<your Upstash REST URL>
+UPSTASH_REDIS_REST_TOKEN=<your Upstash REST token>
+```
+
+4. Leave `VITE_API_BASE_URL` unset unless you want every API call, including single-player sessions, to go through a backend. In production, multiplayer room calls and `/api/health` automatically use the bundled same-origin Vercel API.
 5. If Vercel asks for settings, use:
 
 ```bash
@@ -66,13 +73,13 @@ Output Directory: dist
 ## Current Backend Limits On Vercel
 
 - The bundled API is deployable on Vercel now.
-- Multiplayer rooms can be made durable by setting `ROOMS_BACKEND=redis` plus Upstash Redis credentials.
+- Multiplayer rooms are shared across devices when `ROOMS_BACKEND=redis` plus Upstash Redis credentials are set.
 - Root suggestion writes default to an in-memory fallback on Vercel because serverless filesystems are read-only.
-- Single-player session state is still memory-backed in the backend, so keep `VITE_API_BASE_URL` unset until the Redis/session persistence work is complete.
+- Single-player session state is still memory-backed in the backend, so keep `VITE_API_BASE_URL` unset unless you intentionally want to test the backend session API.
 
 ## Optional External API
 
-The app can still call an external backend if you set `VITE_API_BASE_URL` in `.env` or in Vercel environment variables. If that variable is unset, the game stays fully frontend-only.
+The app can still call an external backend for all API routes if you set `VITE_API_BASE_URL` in `.env` or in Vercel environment variables. If that variable is unset, production multiplayer uses the same-origin `/api/rooms/*` backend while the rest of the game can stay frontend-local.
 
 See `.env.example` for the optional variable shape.
 

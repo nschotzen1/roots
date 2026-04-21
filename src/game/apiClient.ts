@@ -351,8 +351,11 @@ type Store = {
 type StoreByLanguage = Record<LanguageMode, Store>;
 type ApprovedRootsByLanguage = Record<LanguageMode, string[]>;
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL?.trim() ?? '';
-const USE_REMOTE_API = API_BASE.length > 0;
+const EXPLICIT_API_BASE = import.meta.env.VITE_API_BASE_URL?.trim() ?? '';
+const DEFAULT_PRODUCTION_API_BASE = import.meta.env.PROD ? '/' : '';
+const REMOTE_API_BASE = EXPLICIT_API_BASE || DEFAULT_PRODUCTION_API_BASE;
+const USE_REMOTE_API = EXPLICIT_API_BASE.length > 0;
+const USE_REMOTE_SHARED_ROOM_API = REMOTE_API_BASE.length > 0;
 const DEFAULT_ROOT_LENGTH = 3;
 const LOCAL_SUGGESTIONS_STORAGE_KEY = 'roots.suggestions.v1';
 const LOCAL_APPROVED_ROOTS_STORAGE_KEY = 'roots.approvedRoots.v1';
@@ -2757,8 +2760,16 @@ const handleRoomStart = async (roomCode: string, body: Record<string, unknown>) 
   return serializeRoomPayload(room, { player, neighborEdges: neighbors, now });
 };
 
+const getApiPathname = (path: string) => new URL(path, 'https://root-game.local').pathname;
+
+const shouldUseRemoteSharedApi = (path: string) => {
+  if (!USE_REMOTE_SHARED_ROOM_API) return false;
+  const pathname = getApiPathname(path);
+  return pathname === '/api/health' || pathname.startsWith('/api/rooms');
+};
+
 const requestRemoteJson = async <T,>(path: string, init?: RequestInit): Promise<T> => {
-  const response = await fetch(`${API_BASE.replace(/\/+$/, '')}${path}`, init);
+  const response = await fetch(`${REMOTE_API_BASE.replace(/\/+$/, '')}${path}`, init);
   let data: unknown = null;
   const raw = await response.text();
 
@@ -2897,7 +2908,9 @@ const requestLocalJson = async <T,>(path: string, init?: RequestInit): Promise<T
 };
 
 export const requestJson = async <T,>(path: string, init?: RequestInit): Promise<T> =>
-  USE_REMOTE_API ? requestRemoteJson<T>(path, init) : requestLocalJson<T>(path, init);
+  USE_REMOTE_API || shouldUseRemoteSharedApi(path)
+    ? requestRemoteJson<T>(path, init)
+    : requestLocalJson<T>(path, init);
 
 export const isApiError = (error: unknown): error is ApiError => {
   if (typeof error !== 'object' || error === null) return false;
@@ -2915,3 +2928,4 @@ export const resetApiTime = () => {
 };
 
 export const isRemoteApiConfigured = USE_REMOTE_API;
+export const isRemoteSharedRoomApiConfigured = USE_REMOTE_SHARED_ROOM_API;

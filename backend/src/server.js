@@ -41,6 +41,7 @@ import {
   findRoomPlayerByToken,
   getNeighborOptionsForRoom,
   getRaceRemainingMs,
+  getRoomsBackend,
   getRoomControllerRemainingMs,
   joinRoom,
   listWaitingRooms,
@@ -191,6 +192,7 @@ app.get('/health', async (_req, res) => {
       pendingSuggestions: pendingSuggestions.length,
       activeRooms: await countRooms(),
       storageBackend: config.storageBackend,
+      roomsBackend: getRoomsBackend(),
       ts: Date.now(),
     });
   } catch (error) {
@@ -211,6 +213,7 @@ app.get('/api/health', async (_req, res) => {
       pendingSuggestions: pendingSuggestions.length,
       activeRooms: await countRooms(),
       storageBackend: config.storageBackend,
+      roomsBackend: getRoomsBackend(),
       ts: Date.now(),
     });
   } catch (error) {
