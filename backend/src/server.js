@@ -54,7 +54,7 @@ import {
 } from './multiplayerRooms.js';
 import { resolveMoveOutcome } from './playRules.js';
 import { normalizeMoveTypes, normalizeSessionMode } from './constants.js';
-import { parseRootInput, toDottedRoot } from './transliteration.js';
+import { normalizeLanguageMode, parseRootInput, toDottedRoot } from './transliteration.js';
 
 const app = express();
 let initPromise = null;
@@ -83,11 +83,12 @@ app.use((req, res, next) => {
   ensureInitialized().then(() => next()).catch(next);
 });
 
-const parseBodyRoot = (value) => parseRootInput(value, config.defaultRootLength);
+const parseBodyRoot = (value, language = config.defaultLanguage) =>
+  parseRootInput(value, language, config.defaultRootLength);
 
-const parseVisitedRoots = (visited) => {
+const parseVisitedRoots = (visited, language = config.defaultLanguage) => {
   if (!Array.isArray(visited)) return [];
-  return [...new Set(visited.map((value) => parseBodyRoot(value)).filter(Boolean))];
+  return [...new Set(visited.map((value) => parseBodyRoot(value, language)).filter(Boolean))];
 };
 
 const formatNeighborPayload = (root, neighborEdges) => ({
@@ -99,7 +100,7 @@ const formatNeighborPayload = (root, neighborEdges) => ({
 });
 
 const getNeighborOptionsForSession = (session, limit = 500) =>
-  getNeighbors(session.currentRoot, {
+  getNeighbors(session.language || config.defaultLanguage, session.currentRoot, {
     types: session.types,
     limit,
     excludeVisited: !session.allowRevisit,
@@ -127,9 +128,9 @@ const normalizeSuggestionStatus = (value) => {
     : 'all';
 };
 
-const pickRandomDifferentRoot = async (root, maxAttempts = 20) => {
+const pickRandomDifferentRoot = async (language, root, maxAttempts = 20) => {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const candidate = await pickRandomRoot({ length: config.defaultRootLength, minDegree: 0 });
+    const candidate = await pickRandomRoot(language, { length: config.defaultRootLength, minDegree: 0 });
     if (!candidate) return null;
     if (candidate.plain !== root) return candidate;
   }
@@ -137,14 +138,21 @@ const pickRandomDifferentRoot = async (root, maxAttempts = 20) => {
   return null;
 };
 
-const selectPlayableStartRoot = async ({ requestedRoot, types, allowRevisit, letterBank }) => {
+const selectPlayableStartRoot = async ({
+  language = config.defaultLanguage,
+  requestedRoot,
+  types,
+  allowRevisit,
+  letterBank,
+}) => {
+  const normalizedLanguage = normalizeLanguageMode(language);
   if (requestedRoot) {
-    const exists = await rootExists(requestedRoot);
+    const exists = await rootExists(normalizedLanguage, requestedRoot);
     if (!exists) {
       return { error: 'start_root_not_found' };
     }
 
-    const sampleNeighbors = await getNeighbors(requestedRoot, {
+    const sampleNeighbors = await getNeighbors(normalizedLanguage, requestedRoot, {
       types,
       limit: 1,
       excludeVisited: !allowRevisit,
@@ -160,10 +168,13 @@ const selectPlayableStartRoot = async ({ requestedRoot, types, allowRevisit, let
   }
 
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    const candidate = await pickRandomRoot({ length: config.defaultRootLength, minDegree: 1 });
+    const candidate = await pickRandomRoot(normalizedLanguage, {
+      length: config.defaultRootLength,
+      minDegree: 1,
+    });
     if (!candidate) break;
 
-    const sampleNeighbors = await getNeighbors(candidate.plain, {
+    const sampleNeighbors = await getNeighbors(normalizedLanguage, candidate.plain, {
       types,
       limit: 1,
       excludeVisited: !allowRevisit,
@@ -181,14 +192,18 @@ const selectPlayableStartRoot = async ({ requestedRoot, types, allowRevisit, let
 
 app.get('/health', async (_req, res) => {
   try {
-    const roots = await countRoots();
+    const rootsByLanguage = {
+      hebrew: await countRoots('hebrew'),
+      arabic: await countRoots('arabic'),
+    };
     const pendingSuggestions = await listRootSuggestions(config.rootSuggestionsFile, {
       status: 'pending',
       limit: 5000,
     });
     res.json({
       ok: true,
-      roots,
+      roots: rootsByLanguage[config.defaultLanguage] ?? rootsByLanguage.hebrew,
+      rootsByLanguage,
       pendingSuggestions: pendingSuggestions.length,
       activeRooms: await countRooms(),
       storageBackend: config.storageBackend,
@@ -202,14 +217,18 @@ app.get('/health', async (_req, res) => {
 
 app.get('/api/health', async (_req, res) => {
   try {
-    const roots = await countRoots();
+    const rootsByLanguage = {
+      hebrew: await countRoots('hebrew'),
+      arabic: await countRoots('arabic'),
+    };
     const pendingSuggestions = await listRootSuggestions(config.rootSuggestionsFile, {
       status: 'pending',
       limit: 5000,
     });
     res.json({
       ok: true,
-      roots,
+      roots: rootsByLanguage[config.defaultLanguage] ?? rootsByLanguage.hebrew,
+      rootsByLanguage,
       pendingSuggestions: pendingSuggestions.length,
       activeRooms: await countRooms(),
       storageBackend: config.storageBackend,
@@ -224,11 +243,16 @@ app.get('/api/health', async (_req, res) => {
 app.get('/api/root-suggestions', async (req, res) => {
   try {
     const status = normalizeSuggestionStatus(req.query?.status);
+    const language = req.query?.language ? normalizeLanguageMode(req.query.language) : null;
     const suggestions = await listRootSuggestions(config.rootSuggestionsFile, {
       status,
       limit: 500,
     });
-    res.json({ suggestions });
+    res.json({
+      suggestions: language
+        ? suggestions.filter((suggestion) => suggestion.language === language)
+        : suggestions,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -236,18 +260,20 @@ app.get('/api/root-suggestions', async (req, res) => {
 
 app.post('/api/root-suggestions', async (req, res) => {
   try {
-    const root = parseBodyRoot(req.body?.root);
+    const language = normalizeLanguageMode(req.body?.language);
+    const root = parseBodyRoot(req.body?.root, language);
     if (!root) {
       res.status(400).json({ error: 'root_is_required' });
       return;
     }
 
-    if (await rootExists(root)) {
+    if (await rootExists(language, root)) {
       res.status(409).json({ error: 'root_already_exists', root });
       return;
     }
 
     const suggestion = await createRootSuggestion(config.rootSuggestionsFile, {
+      language,
       root,
       note: req.body?.note,
     });
@@ -282,9 +308,13 @@ app.post('/api/root-suggestions/:suggestionId/review', async (req, res) => {
       return;
     }
 
-    if (decision === 'approve' && !(await rootExists(current.root))) {
-      await addRoot(current.root);
-      await appendApprovedRoot(config.approvedRootsFile, current.root);
+    const language = normalizeLanguageMode(current.language);
+    if (decision === 'approve' && !(await rootExists(language, current.root))) {
+      await addRoot(language, current.root);
+      await appendApprovedRoot(
+        config.approvedRootsFiles[language] || config.approvedRootsFile,
+        current.root,
+      );
     }
 
     const suggestion = await reviewRootSuggestion(config.rootSuggestionsFile, req.params.suggestionId, {
@@ -305,25 +335,26 @@ app.post('/api/root-suggestions/:suggestionId/review', async (req, res) => {
 
 app.post('/getNextOptions', async (req, res) => {
   try {
-    const root = parseBodyRoot(req.body?.root);
+    const language = normalizeLanguageMode(req.body?.language);
+    const root = parseBodyRoot(req.body?.root, language);
     if (!root) {
       res.status(400).json({ error: 'root is required' });
       return;
     }
 
-    const exists = await rootExists(root);
+    const exists = await rootExists(language, root);
     if (!exists) {
       res.status(404).json({ error: 'root_not_found', root });
       return;
     }
 
     const types = normalizeMoveTypes(req.body?.types);
-    const visited = parseVisitedRoots(req.body?.visited);
+    const visited = parseVisitedRoots(req.body?.visited, language);
     const excludeVisited = Boolean(req.body?.exclude_visited ?? req.body?.excludeVisited ?? false);
-    const letterBank = normalizeLetterBank(req.body?.letter_bank ?? req.body?.letterBank);
+    const letterBank = normalizeLetterBank(req.body?.letter_bank ?? req.body?.letterBank, language);
     const limit = Math.min(Math.max(Number(req.body?.limit) || 500, 1), 5000);
 
-    const edges = await getNeighbors(root, {
+    const edges = await getNeighbors(language, root, {
       types,
       limit,
       excludeVisited,
@@ -348,12 +379,14 @@ app.get('/api/rooms/list', async (_req, res) => {
 
 app.post('/api/rooms/create', async (req, res) => {
   try {
+    const language = normalizeLanguageMode(req.body?.language);
     const types = normalizeMoveTypes(req.body?.types ?? req.body?.allowedTypes);
     const allowRevisit = Boolean(req.body?.allow_revisit ?? req.body?.allowRevisit ?? false);
-    const letterBank = normalizeLetterBank(req.body?.letter_bank ?? req.body?.letterBank);
+    const letterBank = normalizeLetterBank(req.body?.letter_bank ?? req.body?.letterBank, language);
     const optionsLimit = Math.min(Math.max(Number(req.body?.optionsLimit) || 500, 1), 5000);
-    const requestedRoot = parseBodyRoot(req.body?.startRoot ?? req.body?.root);
+    const requestedRoot = parseBodyRoot(req.body?.startRoot ?? req.body?.root, language);
     const startSelection = await selectPlayableStartRoot({
+      language,
       requestedRoot,
       types,
       allowRevisit,
@@ -367,6 +400,7 @@ app.post('/api/rooms/create', async (req, res) => {
 
     const now = Date.now();
     const { room, player } = await createRoom({
+      language,
       startRoot: startSelection.root,
       playerName: req.body?.playerName ?? req.body?.name,
       allowRevisit,
@@ -632,7 +666,7 @@ app.post('/api/rooms/:roomCode/move', async (req, res) => {
         };
       }
 
-      const candidateRoot = parseBodyRoot(req.body?.root);
+      const candidateRoot = parseBodyRoot(req.body?.root, room.language || config.defaultLanguage);
       if (!candidateRoot) {
         return {
           status: 400,
@@ -692,10 +726,15 @@ app.post('/api/rooms/:roomCode/move', async (req, res) => {
         };
       }
 
-      const moveEdge = await getDirectMove(room.currentRoot, candidateRoot, {
-        types: room.types,
-        letterBank: room.letterBank,
-      });
+      const moveEdge = await getDirectMove(
+        room.language || config.defaultLanguage,
+        room.currentRoot,
+        candidateRoot,
+        {
+          types: room.types,
+          letterBank: room.letterBank,
+        },
+      );
 
       if (!moveEdge) {
         applyInvalidRoomMove(room, player, now);
@@ -813,14 +852,16 @@ app.post('/api/rooms/:roomCode/move', async (req, res) => {
 
 app.post('/api/session/start', async (req, res) => {
   try {
+    const language = normalizeLanguageMode(req.body?.language);
     const mode = normalizeSessionMode(req.body?.mode);
     const types = normalizeMoveTypes(req.body?.types ?? req.body?.allowedTypes);
     const allowRevisit = Boolean(req.body?.allow_revisit ?? req.body?.allowRevisit ?? false);
-    const letterBank = normalizeLetterBank(req.body?.letter_bank ?? req.body?.letterBank);
+    const letterBank = normalizeLetterBank(req.body?.letter_bank ?? req.body?.letterBank, language);
     const optionsLimit = Math.min(Math.max(Number(req.body?.optionsLimit) || 500, 1), 5000);
 
-    const requestedRoot = parseBodyRoot(req.body?.startRoot ?? req.body?.root);
+    const requestedRoot = parseBodyRoot(req.body?.startRoot ?? req.body?.root, language);
     const startSelection = await selectPlayableStartRoot({
+      language,
       requestedRoot,
       types,
       allowRevisit,
@@ -833,11 +874,11 @@ app.post('/api/session/start', async (req, res) => {
     }
 
     const startRoot = startSelection.root;
-    let targetRoot = parseBodyRoot(req.body?.targetRoot);
+    let targetRoot = parseBodyRoot(req.body?.targetRoot, language);
 
     if (mode === 'journey') {
       if (targetRoot) {
-        const exists = await rootExists(targetRoot);
+        const exists = await rootExists(language, targetRoot);
         if (!exists) {
           res.status(400).json({ error: 'target_root_not_found' });
           return;
@@ -847,8 +888,8 @@ app.post('/api/session/start', async (req, res) => {
           return;
         }
       } else {
-        const generated = await pickJourneyTarget(startRoot, { minDepth: 3, maxDepth: 10 });
-        targetRoot = generated?.plain || (await pickRandomDifferentRoot(startRoot))?.plain || null;
+        const generated = await pickJourneyTarget(language, startRoot, { minDepth: 3, maxDepth: 10 });
+        targetRoot = generated?.plain || (await pickRandomDifferentRoot(language, startRoot))?.plain || null;
       }
     } else {
       targetRoot = null;
@@ -856,6 +897,7 @@ app.post('/api/session/start', async (req, res) => {
 
     const session = createSession({
       mode,
+      language,
       startRoot,
       targetRoot,
       types,
@@ -918,7 +960,7 @@ app.post('/api/session/:sessionId/move', async (req, res) => {
       return;
     }
 
-    const candidateRoot = parseBodyRoot(req.body?.root);
+    const candidateRoot = parseBodyRoot(req.body?.root, session.language || config.defaultLanguage);
     if (!candidateRoot) {
       res.status(400).json({ error: 'root is required' });
       return;
@@ -944,10 +986,15 @@ app.post('/api/session/:sessionId/move', async (req, res) => {
       return;
     }
 
-    const moveEdge = await getDirectMove(session.currentRoot, candidateRoot, {
-      types: session.types,
-      letterBank: session.letterBank,
-    });
+    const moveEdge = await getDirectMove(
+      session.language || config.defaultLanguage,
+      session.currentRoot,
+      candidateRoot,
+      {
+        types: session.types,
+        letterBank: session.letterBank,
+      },
+    );
 
     if (!moveEdge) {
       applyInvalidMove(session, now);
@@ -994,8 +1041,9 @@ app.post('/api/session/:sessionId/move', async (req, res) => {
 
 app.post('/api/path', async (req, res) => {
   try {
-    const from = parseBodyRoot(req.body?.fromRoot ?? req.body?.from);
-    const to = parseBodyRoot(req.body?.toRoot ?? req.body?.to);
+    const language = normalizeLanguageMode(req.body?.language);
+    const from = parseBodyRoot(req.body?.fromRoot ?? req.body?.from, language);
+    const to = parseBodyRoot(req.body?.toRoot ?? req.body?.to, language);
 
     if (!from || !to) {
       res.status(400).json({ error: 'fromRoot and toRoot are required' });
@@ -1016,7 +1064,7 @@ app.post('/api/path', async (req, res) => {
     const types = normalizeMoveTypes(req.body?.types);
     const maxDepth = Math.min(Math.max(Number(req.body?.maxDepth) || 12, 1), 25);
 
-    const path = await findShortestPath(from, to, { maxDepth, types });
+    const path = await findShortestPath(language, from, to, { maxDepth, types });
     if (!path) {
       res.status(404).json({ error: 'path_not_found', from, to, maxDepth });
       return;

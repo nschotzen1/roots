@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { normalizeLanguageMode } from './transliteration.js';
 
 const parseNumber = (value, fallback) => {
   const parsed = Number(value);
@@ -31,6 +32,7 @@ export const config = {
     database: process.env.NEO4J_DATABASE || 'neo4j',
   },
   corsOrigin: process.env.ALLOWED_ORIGIN || '*',
+  defaultLanguage: normalizeLanguageMode(process.env.DEFAULT_LANGUAGE),
   defaultRootLength: parseNumber(process.env.DEFAULT_ROOT_LENGTH, 3),
   defaultCountdownMs: parseNumber(
     process.env.DEFAULT_COUNTDOWN_MS,
@@ -45,7 +47,24 @@ export const config = {
   defaultBaseTurnMs: parseNumber(process.env.DEFAULT_BASE_TURN_MS, 12_000),
   defaultMaxTurnMs: parseNumber(process.env.DEFAULT_MAX_TURN_MS, 30_000),
   autoSeed: process.env.AUTO_SEED !== 'false',
-  rootsSourceFile: resolveConfiguredPath(process.env.ROOTS_SOURCE_FILE, 'data/roots_hebrew_scraped.txt'),
+  rootsSourceFile: resolveConfiguredPath(
+    process.env.ROOTS_SOURCE_FILE || process.env.HEBREW_ROOTS_SOURCE_FILE,
+    'data/roots_hebrew_scraped.txt',
+  ),
+  rootsSourceFiles: {
+    hebrew: resolveConfiguredPath(
+      process.env.ROOTS_SOURCE_FILE || process.env.HEBREW_ROOTS_SOURCE_FILE,
+      'data/roots_hebrew_scraped.txt',
+    ),
+    arabic: resolveConfiguredPath(process.env.ARABIC_ROOTS_SOURCE_FILE, 'data/roots_arabic_scraped.txt'),
+  },
   approvedRootsFile: resolveConfiguredPath(process.env.APPROVED_ROOTS_FILE, 'data/roots_hebrew_manual.txt'),
+  approvedRootsFiles: {
+    hebrew: resolveConfiguredPath(
+      process.env.APPROVED_ROOTS_FILE || process.env.HEBREW_APPROVED_ROOTS_FILE,
+      'data/roots_hebrew_manual.txt',
+    ),
+    arabic: resolveConfiguredPath(process.env.ARABIC_APPROVED_ROOTS_FILE, 'data/roots_arabic_manual.txt'),
+  },
   rootSuggestionsFile: resolveConfiguredPath(process.env.ROOT_SUGGESTIONS_FILE, 'data/root_suggestions.json'),
 };

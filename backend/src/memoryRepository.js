@@ -1,7 +1,11 @@
 import { buildMoveGraph } from './graphBuilder.js';
 import { normalizeMoveTypes } from './constants.js';
 import { loadRootsFromFile } from './rootSources.js';
-import { toDottedRoot } from './transliteration.js';
+import {
+  DEFAULT_LANGUAGE_MODE,
+  normalizeLanguageMode,
+  toDottedRoot,
+} from './transliteration.js';
 
 const createEmptyStore = () => ({
   initialized: false,
@@ -17,12 +21,20 @@ const createEmptyStore = () => ({
   adjacencyByRoot: new Map(),
 });
 
-let store = createEmptyStore();
+const storesByLanguage = {
+  hebrew: createEmptyStore(),
+  arabic: createEmptyStore(),
+};
 
-const ensureInitialized = () => {
+const getStore = (language = DEFAULT_LANGUAGE_MODE) =>
+  storesByLanguage[normalizeLanguageMode(language)];
+
+const ensureInitialized = (language = DEFAULT_LANGUAGE_MODE) => {
+  const store = getStore(language);
   if (!store.initialized) {
-    throw new Error('In-memory graph has not been initialized.');
+    throw new Error(`In-memory ${normalizeLanguageMode(language)} graph has not been initialized.`);
   }
+  return store;
 };
 
 const randomItem = (items) => {
@@ -31,9 +43,78 @@ const randomItem = (items) => {
   return items[index] || null;
 };
 
+const sortRoots = (roots, language) =>
+  [...roots].sort((left, right) =>
+    normalizeLanguageMode(language) === 'arabic'
+      ? left.localeCompare(right, 'ar')
+      : left.localeCompare(right),
+  );
+
 const normalizeVisited = (visited) => new Set(Array.isArray(visited) ? visited.filter(Boolean) : []);
 const normalizeLetterBank = (letterBank) =>
   new Set(Array.isArray(letterBank) ? letterBank.filter(Boolean) : []);
+
+const normalizeRootArgs = (languageOrRoot, rootOrOptions, maybeOptions) => {
+  if (typeof rootOrOptions === 'string') {
+    return {
+      language: normalizeLanguageMode(languageOrRoot),
+      root: rootOrOptions,
+      options: maybeOptions || {},
+    };
+  }
+
+  return {
+    language: DEFAULT_LANGUAGE_MODE,
+    root: languageOrRoot,
+    options: rootOrOptions || {},
+  };
+};
+
+const normalizeRootOnlyArgs = (languageOrRoot, maybeRoot) => {
+  if (typeof maybeRoot === 'string') {
+    return {
+      language: normalizeLanguageMode(languageOrRoot),
+      root: maybeRoot,
+    };
+  }
+
+  return {
+    language: DEFAULT_LANGUAGE_MODE,
+    root: languageOrRoot,
+  };
+};
+
+const normalizeTwoRootArgs = (languageOrFrom, fromOrTo, toOrOptions, maybeOptions) => {
+  if (typeof toOrOptions === 'string') {
+    return {
+      language: normalizeLanguageMode(languageOrFrom),
+      from: fromOrTo,
+      to: toOrOptions,
+      options: maybeOptions || {},
+    };
+  }
+
+  return {
+    language: DEFAULT_LANGUAGE_MODE,
+    from: languageOrFrom,
+    to: fromOrTo,
+    options: toOrOptions || {},
+  };
+};
+
+const normalizeOptionArgs = (languageOrOptions, maybeOptions) => {
+  if (typeof languageOrOptions === 'string') {
+    return {
+      language: normalizeLanguageMode(languageOrOptions),
+      options: maybeOptions || {},
+    };
+  }
+
+  return {
+    language: DEFAULT_LANGUAGE_MODE,
+    options: languageOrOptions || {},
+  };
+};
 
 const edgePassesFilters = (edge, { typeSet, excludeVisited, visitedSet, hasLetterBank, letterBankSet }) => {
   if (!typeSet.has(edge.type)) return false;
@@ -43,6 +124,7 @@ const edgePassesFilters = (edge, { typeSet, excludeVisited, visitedSet, hasLette
 };
 
 const getFilteredEdges = (
+  language,
   root,
   {
     types,
@@ -52,7 +134,7 @@ const getFilteredEdges = (
     letterBank = null,
   } = {},
 ) => {
-  ensureInitialized();
+  const store = ensureInitialized(language);
 
   const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 5000);
   const typeSet = new Set(normalizeMoveTypes(types));
@@ -74,12 +156,13 @@ const getFilteredEdges = (
     .slice(0, safeLimit);
 };
 
-const buildStateFromRoots = (roots, source) => {
-  const uniqueRoots = [...new Set(roots)].sort();
+const buildStateFromRoots = (roots, source, language = DEFAULT_LANGUAGE_MODE) => {
+  const normalizedLanguage = normalizeLanguageMode(language);
+  const uniqueRoots = sortRoots(new Set(roots), normalizedLanguage);
   const rootRows = uniqueRoots.map((plain) => ({
     plain,
     dotted: toDottedRoot(plain),
-    length: plain.length,
+    length: Array.from(plain).length,
   }));
 
   const rootsByPlain = new Map();
@@ -118,10 +201,14 @@ const buildStateFromRoots = (roots, source) => {
   }
 
   for (const edgesForRoot of adjacencyByRoot.values()) {
-    edgesForRoot.sort((left, right) => left.neighbor.localeCompare(right.neighbor));
+    edgesForRoot.sort((left, right) =>
+      normalizedLanguage === 'arabic'
+        ? left.neighbor.localeCompare(right.neighbor, 'ar')
+        : left.neighbor.localeCompare(right.neighbor),
+    );
   }
 
-  store = {
+  storesByLanguage[normalizedLanguage] = {
     initialized: true,
     source,
     stats: {
@@ -136,13 +223,14 @@ const buildStateFromRoots = (roots, source) => {
   };
 
   return {
+    language: normalizedLanguage,
     source,
-    ...store.stats,
+    ...storesByLanguage[normalizedLanguage].stats,
   };
 };
 
-const bfs = (start, { types, maxDepth = 12 } = {}) => {
-  ensureInitialized();
+const bfs = (language, start, { types, maxDepth = 12 } = {}) => {
+  const store = ensureInitialized(language);
 
   if (!store.rootsByPlain.has(start)) {
     return {
@@ -179,67 +267,95 @@ const bfs = (start, { types, maxDepth = 12 } = {}) => {
   return { distances, previous };
 };
 
-export const initializeMemoryRepositoryFromRoots = async (roots, source = 'memory') => {
-  const uniqueRoots = [...new Set(roots)].sort();
+export const initializeMemoryRepositoryFromRoots = async (
+  roots,
+  source = 'memory',
+  language = DEFAULT_LANGUAGE_MODE,
+) => {
+  const uniqueRoots = sortRoots(new Set(roots), language);
   if (uniqueRoots.length < 2) {
     throw new Error('Need at least two roots to build the in-memory graph.');
   }
 
-  return buildStateFromRoots(uniqueRoots, source);
+  return buildStateFromRoots(uniqueRoots, source, language);
 };
 
-export const initializeMemoryRepositoryFromFile = async (filePath, rootLength = 3) => {
-  const roots = await loadRootsFromFile(filePath, rootLength);
-  return initializeMemoryRepositoryFromRoots(roots, filePath);
+export const initializeMemoryRepositoryFromFile = async (
+  filePath,
+  rootLength = 3,
+  language = DEFAULT_LANGUAGE_MODE,
+) => {
+  const roots = await loadRootsFromFile(filePath, rootLength, language);
+  return initializeMemoryRepositoryFromRoots(roots, filePath, language);
 };
 
-export const getMemoryRepositoryStats = async () => {
-  ensureInitialized();
+export const getMemoryRepositoryStats = async (language = DEFAULT_LANGUAGE_MODE) => {
+  const normalizedLanguage = normalizeLanguageMode(language);
+  const store = ensureInitialized(normalizedLanguage);
   return {
+    language: normalizedLanguage,
     source: store.source,
     ...store.stats,
   };
 };
 
-export const countRoots = async () => {
-  ensureInitialized();
+export const countRoots = async (language = DEFAULT_LANGUAGE_MODE) => {
+  const store = ensureInitialized(language);
   return store.stats.rootsCount;
 };
 
-export const listRoots = async () => {
-  ensureInitialized();
-  return [...store.rootsByPlain.keys()].sort();
+export const listRoots = async (language = DEFAULT_LANGUAGE_MODE) => {
+  const normalizedLanguage = normalizeLanguageMode(language);
+  const store = ensureInitialized(normalizedLanguage);
+  return sortRoots(store.rootsByPlain.keys(), normalizedLanguage);
 };
 
-export const rootExists = async (root) => {
-  ensureInitialized();
+export const rootExists = async (languageOrRoot, maybeRoot) => {
+  const { language, root } = normalizeRootOnlyArgs(languageOrRoot, maybeRoot);
+  const store = ensureInitialized(language);
   return store.rootsByPlain.has(root);
 };
 
-export const addRoot = async (root) => {
-  ensureInitialized();
+export const addRoot = async (languageOrRoot, maybeRoot) => {
+  const { language, root } = normalizeRootOnlyArgs(languageOrRoot, maybeRoot);
+  const store = ensureInitialized(language);
 
   if (store.rootsByPlain.has(root)) {
     return {
       added: false,
+      language,
       ...store.stats,
     };
   }
 
-  return buildStateFromRoots([...store.rootsByPlain.keys(), root], store.source || 'memory');
+  return {
+    added: true,
+    ...(await buildStateFromRoots([...store.rootsByPlain.keys(), root], store.source || 'memory', language)),
+  };
 };
 
-export const getNeighbors = async (root, options = {}) => {
-  return getFilteredEdges(root, options);
+export const getNeighbors = async (languageOrRoot, rootOrOptions, maybeOptions) => {
+  const { language, root, options } = normalizeRootArgs(languageOrRoot, rootOrOptions, maybeOptions);
+  return getFilteredEdges(language, root, options);
 };
 
-export const getDirectMove = async (from, to, options = {}) => {
-  const edges = getFilteredEdges(from, { ...options, limit: 5000 });
+export const getDirectMove = async (languageOrFrom, fromOrTo, toOrOptions, maybeOptions) => {
+  const { language, from, to, options } = normalizeTwoRootArgs(
+    languageOrFrom,
+    fromOrTo,
+    toOrOptions,
+    maybeOptions,
+  );
+  const edges = getFilteredEdges(language, from, { ...options, limit: 5000 });
   return edges.find((edge) => edge.neighbor === to) || null;
 };
 
-export const pickRandomRoot = async ({ length = 3, minDegree = 1 } = {}) => {
-  ensureInitialized();
+export const pickRandomRoot = async (languageOrOptions, maybeOptions) => {
+  const {
+    language,
+    options: { length = 3, minDegree = 1 } = {},
+  } = normalizeOptionArgs(languageOrOptions, maybeOptions);
+  const store = ensureInitialized(language);
 
   const candidates = (store.rootsByLength.get(Number(length)) || []).filter((root) => {
     const degree = (store.adjacencyByRoot.get(root.plain) || []).length;
@@ -256,10 +372,17 @@ export const pickRandomRoot = async ({ length = 3, minDegree = 1 } = {}) => {
   };
 };
 
-export const pickJourneyTarget = async (from, { minDepth = 3, maxDepth = 10, types } = {}) => {
+export const pickJourneyTarget = async (languageOrFrom, fromOrOptions, maybeOptions) => {
+  const { language, root: from, options } = normalizeRootArgs(
+    languageOrFrom,
+    fromOrOptions,
+    maybeOptions,
+  );
+  const { minDepth = 3, maxDepth = 10, types } = options || {};
   const safeMinDepth = Math.max(1, Number(minDepth) || 3);
   const safeMaxDepth = Math.max(safeMinDepth, Math.min(Number(maxDepth) || 10, 20));
-  const { distances } = bfs(from, { types, maxDepth: safeMaxDepth });
+  const store = ensureInitialized(language);
+  const { distances } = bfs(language, from, { types, maxDepth: safeMaxDepth });
 
   const candidates = [];
   for (const [root, distance] of distances.entries()) {
@@ -279,7 +402,15 @@ export const pickJourneyTarget = async (from, { minDepth = 3, maxDepth = 10, typ
   return randomItem(candidates);
 };
 
-export const findShortestPath = async (from, to, { maxDepth = 12, types } = {}) => {
+export const findShortestPath = async (languageOrFrom, fromOrTo, toOrOptions, maybeOptions) => {
+  const { language, from, to, options } = normalizeTwoRootArgs(
+    languageOrFrom,
+    fromOrTo,
+    toOrOptions,
+    maybeOptions,
+  );
+  const { maxDepth = 12, types } = options || {};
+
   if (from === to) {
     return {
       path: [from],
@@ -288,7 +419,7 @@ export const findShortestPath = async (from, to, { maxDepth = 12, types } = {}) 
     };
   }
 
-  const { distances, previous } = bfs(from, { types, maxDepth });
+  const { distances, previous } = bfs(language, from, { types, maxDepth });
   if (!distances.has(to)) {
     return null;
   }

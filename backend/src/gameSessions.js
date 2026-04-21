@@ -1,7 +1,12 @@
 import { v4 as uuidv4 } from 'uuid';
 import { normalizeMoveTypes, normalizeSessionMode } from './constants.js';
 import { createComboState, resolveMoveOutcome } from './playRules.js';
-import { normalizeGameChar as normalizeTransliteratedChar } from './transliteration.js';
+import {
+  DEFAULT_LANGUAGE_MODE,
+  normalizeArabicChar,
+  normalizeGameChar as normalizeTransliteratedChar,
+  normalizeLanguageMode,
+} from './transliteration.js';
 
 const sessions = new Map();
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
@@ -12,15 +17,16 @@ const normalizeNumber = (value, fallback, min, max) => {
   return clamp(Math.round(parsed), min, max);
 };
 
-const normalizeGameChar = (ch) => {
-  return normalizeTransliteratedChar(ch);
-};
+const normalizeGameChar = (ch, language = DEFAULT_LANGUAGE_MODE) =>
+  normalizeLanguageMode(language) === 'arabic'
+    ? normalizeArabicChar(ch)
+    : normalizeTransliteratedChar(ch);
 
-export const normalizeLetterBank = (letterBank) => {
+export const normalizeLetterBank = (letterBank, language = DEFAULT_LANGUAGE_MODE) => {
   if (!Array.isArray(letterBank)) return null;
 
   const normalized = letterBank
-    .map((ch) => normalizeGameChar(ch))
+    .map((ch) => normalizeGameChar(ch, language))
     .filter(Boolean);
 
   return normalized.length > 0 ? [...new Set(normalized)] : null;
@@ -48,6 +54,7 @@ export const markTimeoutIfNeeded = (session, now = Date.now()) => {
 
 export const createSession = ({
   mode,
+  language = DEFAULT_LANGUAGE_MODE,
   startRoot,
   targetRoot,
   types,
@@ -65,6 +72,7 @@ export const createSession = ({
   const session = {
     id: uuidv4(),
     mode: normalizeSessionMode(mode),
+    language: normalizeLanguageMode(language),
     status: 'active',
     reason: null,
     createdAtMs: now,
@@ -78,7 +86,7 @@ export const createSession = ({
     visited: new Set([startRoot]),
     allowRevisit: Boolean(allowRevisit),
     types: normalizeMoveTypes(types),
-    letterBank: normalizeLetterBank(letterBank),
+    letterBank: normalizeLetterBank(letterBank, language),
     turnStartedAtMs: now,
     countdownRemainingMs: safeCountdown,
     combo: createComboState(),
@@ -150,6 +158,7 @@ export const serializeSession = (session, now = Date.now()) => {
   return {
     id: session.id,
     mode: session.mode,
+    language: session.language || DEFAULT_LANGUAGE_MODE,
     status: session.status,
     reason: session.reason,
     currentRoot: session.currentRoot,

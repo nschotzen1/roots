@@ -1,6 +1,6 @@
 # Root Game Backend
 
-Node.js + Express backend for the Hebrew root game. Runtime storage now defaults to an in-memory adjacency hash; the older Neo4j graph backend is still kept as an optional implementation.
+Node.js + Express backend for the Hebrew and Arabic root game. Runtime storage now defaults to per-language in-memory adjacency hashes; the older Neo4j graph backend is still kept as a Hebrew-only optional implementation.
 
 ## Environment
 
@@ -14,7 +14,9 @@ Important vars:
 - `NEO4J_URI` (default: `bolt://localhost:7687`)
 - `NEO4J_USER` (default: `neo4j`)
 - `NEO4J_PASSWORD` (default: `roots-password`)
-- `ROOTS_SOURCE_FILE` (default: `data/roots_hebrew_scraped.txt`)
+- `ROOTS_SOURCE_FILE` / `HEBREW_ROOTS_SOURCE_FILE` (default: `data/roots_hebrew_scraped.txt`)
+- `ARABIC_ROOTS_SOURCE_FILE` (default: `data/roots_arabic_scraped.txt`)
+- `DEFAULT_LANGUAGE` (default: `hebrew`; requests can pass `language: "arabic"`)
 - `DEFAULT_COUNTDOWN_MS` (default: `45000`)
 - `DEFAULT_BONUS_BASE_MS` (default: `4000`)
 - `DEFAULT_BONUS_WINDOW_MS` (default: `6000`)
@@ -81,8 +83,8 @@ node src/scrapeRoots.js --url https://tora.quest/tnk1/ljon/jorj/index.html --out
 ## Notes
 
 - In memory mode, the backend builds a hash keyed by root, with all valid outgoing moves precomputed at startup.
-- The default scraped dataset currently contains `1804` normalized 3-letter roots.
-- Neo4j mode is still available by setting `STORAGE_BACKEND=neo4j`.
+- The default memory backend loads both Hebrew and Arabic scraped datasets.
+- Neo4j mode is still available by setting `STORAGE_BACKEND=neo4j`, but it remains the legacy Hebrew graph path.
 - In Neo4j mode, graph nodes are stored as `(:Root {plain, dotted, length})`.
 - In Neo4j mode, moves are stored as `[:MOVE]` with `type` = `REPLACE` or `SWAP` plus metadata.
 - Session state is currently in-memory (good for development and single-instance play).

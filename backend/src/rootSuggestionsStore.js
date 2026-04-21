@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { config } from './config.js';
-import { toDottedRoot } from './transliteration.js';
+import { DEFAULT_LANGUAGE_MODE, normalizeLanguageMode, toDottedRoot } from './transliteration.js';
 
 let memorySuggestions = [];
 let memoryApprovedRoots = new Set();
@@ -47,6 +47,7 @@ const readTextLines = async (filePath) => {
 
 const serializeSuggestion = (suggestion) => ({
   id: suggestion.id,
+  language: normalizeLanguageMode(suggestion.language || DEFAULT_LANGUAGE_MODE),
   root: suggestion.root,
   dottedRoot: suggestion.dottedRoot || toDottedRoot(suggestion.root),
   status: suggestion.status,
@@ -86,10 +87,14 @@ export const listRootSuggestions = async (filePath, { status, limit = 200 } = {}
   return filtered.slice(0, Math.max(1, Math.min(Number(limit) || 200, 2000)));
 };
 
-export const createRootSuggestion = async (filePath, { root, note }) => {
+export const createRootSuggestion = async (filePath, { root, note, language: languageValue }) => {
   const rows = await loadSuggestionRows(filePath);
+  const language = normalizeLanguageMode(languageValue || DEFAULT_LANGUAGE_MODE);
   const duplicate = rows.find(
-    (row) => row.root === root && (row.status === 'pending' || row.status === 'approved'),
+    (row) =>
+      row.language === language &&
+      row.root === root &&
+      (row.status === 'pending' || row.status === 'approved'),
   );
 
   if (duplicate) {
@@ -108,6 +113,7 @@ export const createRootSuggestion = async (filePath, { root, note }) => {
         ? crypto.randomUUID()
         : `suggestion-${Math.random().toString(36).slice(2, 10)}`,
     root,
+    language,
     dottedRoot: toDottedRoot(root),
     status: 'pending',
     note: String(note || '').trim() || null,

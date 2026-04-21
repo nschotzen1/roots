@@ -1,34 +1,47 @@
 import path from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import {
+  DEFAULT_LANGUAGE_MODE,
+  hasArabicChars,
   hasHebrewChars,
+  normalizeArabicRoot,
   normalizeGameRoot,
+  normalizeLanguageMode,
   parseRootInput,
   transliterateHebrewRoot,
 } from './transliteration.js';
 
-const parseLineRoot = (line, rootLength) => {
+const parseLineRoot = (line, rootLength, language = DEFAULT_LANGUAGE_MODE) => {
   const trimmed = (line || '').split('#')[0].trim();
   if (!trimmed) return null;
+  const normalizedLanguage = normalizeLanguageMode(language);
+
+  if (normalizedLanguage === 'arabic' || hasArabicChars(trimmed)) {
+    return normalizeArabicRoot(trimmed, rootLength);
+  }
 
   if (hasHebrewChars(trimmed)) {
     const transliterated = transliterateHebrewRoot(trimmed);
     return normalizeGameRoot(transliterated, rootLength);
   }
 
-  return parseRootInput(trimmed, rootLength);
+  return parseRootInput(trimmed, normalizedLanguage, rootLength);
 };
 
-export const loadRootsFromFile = async (filePath, rootLength = 3) => {
+export const loadRootsFromFile = async (filePath, rootLength = 3, language = DEFAULT_LANGUAGE_MODE) => {
   const content = await readFile(filePath, 'utf-8');
   const roots = new Set();
 
   for (const line of content.split(/\r?\n/)) {
-    const root = parseLineRoot(line, rootLength);
+    const root = parseLineRoot(line, rootLength, language);
     if (root) roots.add(root);
   }
 
-  return [...roots].sort();
+  return [...roots].sort((left, right) =>
+    normalizeLanguageMode(language) === 'arabic'
+      ? left.localeCompare(right, 'ar')
+      : left.localeCompare(right),
+  );
 };
 
 const decodeResponseBuffer = (arrayBuffer, contentType) => {

@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { config } from './config.js';
 import { normalizeMoveTypes } from './constants.js';
 import { createComboState } from './playRules.js';
-import { toDottedRoot } from './transliteration.js';
+import { DEFAULT_LANGUAGE_MODE, normalizeLanguageMode, toDottedRoot } from './transliteration.js';
 import { getNeighbors } from './runtimeRepository.js';
 
 const memoryRooms = new Map();
@@ -16,7 +16,7 @@ const DEFAULT_ROOM_LOCK_WAIT_MS = 2_000;
 const DEFAULT_GAME_DURATION_MS = 90_000;
 const DEFAULT_COUNTDOWN_DURATION_MS = 4_000;
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const ROOM_LANGUAGE = 'hebrew';
+const ROOM_LANGUAGE = DEFAULT_LANGUAGE_MODE;
 
 const ROOM_PHASES = ['waiting', 'countdown', 'racing', 'completed'];
 
@@ -174,7 +174,7 @@ const deserializeStoredRoom = (value) => {
   return {
     id: typeof value.id === 'string' && value.id ? value.id : createOpaqueId('room'),
     code,
-    language: ROOM_LANGUAGE,
+    language: normalizeLanguageMode(value.language),
     version: Math.max(1, Math.floor(Number(value.version) || 1)),
     status: value.status === 'completed' ? 'completed' : 'active',
     phase: normalizePhase(value.phase),
@@ -338,6 +338,7 @@ const generateUniqueRoomCode = async () => {
 };
 
 export const createRoom = async ({
+  language = ROOM_LANGUAGE,
   startRoot,
   playerName,
   allowRevisit = false,
@@ -363,7 +364,7 @@ export const createRoom = async ({
   const room = {
     id: createOpaqueId('room'),
     code: await generateUniqueRoomCode(),
-    language: ROOM_LANGUAGE,
+    language: normalizeLanguageMode(language),
     version: 1,
     status: 'active',
     phase: 'waiting',
@@ -518,7 +519,7 @@ export const advanceRoomLifecycle = (room, now = Date.now()) => {
 };
 
 export const getNeighborOptionsForRoom = (room, limit = 500) =>
-  getNeighbors(room.currentRoot, {
+  getNeighbors(room.language || ROOM_LANGUAGE, room.currentRoot, {
     types: room.types,
     limit,
     excludeVisited: !room.allowRevisit,
